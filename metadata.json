@@ -1,0 +1,6 @@
+{
+  "name": "Deriv Trading Hub",
+  "description": "Comprehensive third-party trading terminal, DBot strategy builder, copy trading engine, synthetic market analyzer, and AI trade advisor for Deriv ecosystem.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
