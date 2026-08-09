@@ -25,6 +25,7 @@ export interface Tick {
   symbol: MarketSymbol;
   id?: string;
   change?: number;
+  pipSize?: number;
 }
 
 export interface Candle {
@@ -39,7 +40,7 @@ export interface ActiveContract {
   id: string;
   symbol: MarketSymbol;
   symbolName: string;
-  contractType: string; // 'CALL' | 'PUT' | 'HIGHER' | 'LOWER' | 'TOUCH' | 'NOTOUCH' | 'DIGITMATCH' | 'DIGITDIFF' | 'DIGITOVER' | 'DIGITUNDER' | 'DIGITEVEN' | 'DIGITODD' | 'ACCU' | 'MULT'
+  contractType: string;
   entrySpot: number;
   currentSpot: number;
   barrier?: number;
@@ -96,7 +97,7 @@ export interface MasterTrader {
   copiersCount: number;
   totalProfitUsd: number;
   maxDrawdown: number;
-  riskScore: number; // 1-10
+  riskScore: number;
   isFollowing?: boolean;
   copySettings?: {
     allocationUsd: number;
