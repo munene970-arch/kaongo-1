@@ -91,55 +91,6 @@ export default function App() {
   useEffect(() => {
     const settledContractsSet = new Set<string>();
 
-    const processOAuthAndConnect = async () => {
-      const activeAppId = REGISTERED_DERIV_APP_ID;
-      const fullUrlStr = window.location.search + ' ' + window.location.hash;
-      const urlParams = new URLSearchParams(window.location.search + window.location.hash.replace('#', '?'));
-      const returnedState = urlParams.get('state');
-      const savedState = sessionStorage.getItem('deriv_oauth_state');
-      if (returnedState && savedState && returnedState !== savedState) console.warn('[Deriv OAuth] State mismatch detected.');
-      if (returnedState) sessionStorage.removeItem('deriv_oauth_state');
-
-      const parsedAccounts = parseDerivOAuthInput(fullUrlStr);
-      let activeToken = sessionStorage.getItem('deriv_token') || localStorage.getItem('deriv_token') || '';
-
-      if (parsedAccounts.length > 0) {
-        try {
-          const serverRes = await fetch('/api/auth/capture-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: parsedAccounts, rawUrl: window.location.href, state: returnedState, appId: activeAppId }),
-          });
-          const serverData = await serverRes.json();
-          if (serverData.success && serverData.capturedToken) {
-            activeToken = serverData.capturedToken;
-            if (Array.isArray(serverData.accounts) && serverData.accounts.length) {
-              saveStoredAccounts(serverData.accounts);
-              setAvailableAccounts(serverData.accounts);
-            }
-          } else {
-            saveStoredAccounts(parsedAccounts);
-            setAvailableAccounts(parsedAccounts);
-            activeToken = (parsedAccounts.find((a) => a.type === 'REAL') || parsedAccounts[0])?.token || activeToken;
-          }
-        } catch (_) {
-          saveStoredAccounts(parsedAccounts);
-          setAvailableAccounts(parsedAccounts);
-          activeToken = (parsedAccounts.find((a) => a.type === 'REAL') || parsedAccounts[0])?.token || activeToken;
-        }
-
-        if (activeToken) sessionStorage.setItem('deriv_token', activeToken);
-        window.history.replaceState({}, document.title, window.location.pathname);
-      } else if (availableAccounts.length > 0) {
-        setAvailableAccounts(getStoredAccounts());
-      }
-
-      setConnectionState((prev) => ({ ...prev, appId: activeAppId, token: activeToken, isConnecting: Boolean(activeToken) }));
-      if (activeToken) derivWS.connect(activeAppId, activeToken);
-    };
-
-    processOAuthAndConnect();
-
     const handleContractUpdate = (updatedContract: ActiveContract) => {
       setActiveContracts((prev) => {
         const idx = prev.findIndex((c) => c.id === updatedContract.id);
@@ -188,8 +139,56 @@ export default function App() {
       }
       if (token) connectWithToken(appId || REGISTERED_DERIV_APP_ID, token);
     };
-
     window.addEventListener('message', handleOAuthMessage);
+
+    const processOAuthAndConnect = async () => {
+      const activeAppId = REGISTERED_DERIV_APP_ID;
+      const fullUrlStr = window.location.search + ' ' + window.location.hash;
+      const urlParams = new URLSearchParams(window.location.search + window.location.hash.replace('#', '?'));
+      const returnedState = urlParams.get('state');
+      const savedState = sessionStorage.getItem('deriv_oauth_state');
+      if (returnedState && savedState && returnedState !== savedState) console.warn('[Deriv OAuth] State mismatch detected.');
+      if (returnedState) sessionStorage.removeItem('deriv_oauth_state');
+
+      const parsedAccounts = parseDerivOAuthInput(fullUrlStr);
+      let activeToken = sessionStorage.getItem('deriv_token') || localStorage.getItem('deriv_token') || '';
+
+      if (parsedAccounts.length > 0) {
+        try {
+          const serverRes = await fetch('/api/auth/capture-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accounts: parsedAccounts, rawUrl: window.location.href, state: returnedState, appId: activeAppId }),
+          });
+          const serverData = await serverRes.json();
+          if (serverData.success && serverData.capturedToken) {
+            activeToken = serverData.capturedToken;
+            if (Array.isArray(serverData.accounts) && serverData.accounts.length) {
+              saveStoredAccounts(serverData.accounts);
+              setAvailableAccounts(serverData.accounts);
+            }
+          } else {
+            saveStoredAccounts(parsedAccounts);
+            setAvailableAccounts(parsedAccounts);
+            activeToken = (parsedAccounts.find((a) => a.type === 'REAL') || parsedAccounts[0])?.token || activeToken;
+          }
+        } catch (_) {
+          saveStoredAccounts(parsedAccounts);
+          setAvailableAccounts(parsedAccounts);
+          activeToken = (parsedAccounts.find((a) => a.type === 'REAL') || parsedAccounts[0])?.token || activeToken;
+        }
+        if (activeToken) sessionStorage.setItem('deriv_token', activeToken);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (availableAccounts.length > 0) {
+        setAvailableAccounts(getStoredAccounts());
+      }
+
+      setConnectionState((prev) => ({ ...prev, appId: activeAppId, token: activeToken, isConnecting: Boolean(activeToken) }));
+      if (activeToken) derivWS.connect(activeAppId, activeToken);
+    };
+
+    processOAuthAndConnect();
+
     return () => {
       derivWS.unsubscribeContracts(handleContractUpdate);
       derivWS.unsubscribeAuth(handleAuthStatus);
@@ -199,11 +198,7 @@ export default function App() {
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setConnectionState((cs) => ({
-        ...cs,
-        isConnected: derivWS.getIsLiveWs(),
-        mode: derivWS.getIsLiveWs() ? 'DERIV_WEBSOCKET_LIVE' : 'DEMO_SIMULATED',
-      }));
+      setConnectionState((cs) => ({ ...cs, isConnected: derivWS.getIsLiveWs(), mode: derivWS.getIsLiveWs() ? 'DERIV_WEBSOCKET_LIVE' : 'DEMO_SIMULATED' }));
     }, 2000);
     return () => window.clearInterval(interval);
   }, []);
@@ -230,12 +225,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-red-600 selection:text-white">
       <HeaderBar connectionState={connectionState} onUpdateConnection={handleUpdateConnection} onOAuthRedirect={handleOAuthRedirect} onResetDemoBalance={handleResetDemoBalance} activeTab={activeTab} setActiveTab={setActiveTab} availableAccounts={availableAccounts} onSelectAccount={handleSelectAccount} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {activeTab === 'terminal' && (
-          <>
-            <DoubleRepeatBot symbol={selectedSymbol} balance={connectionState.balanceUsd} />
-            <TradingTerminal markets={markets} selectedSymbol={selectedSymbol} onSelectSymbol={setSelectedSymbol} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeContracts={activeContracts} />
-          </>
-        )}
+        {activeTab === 'terminal' && <><DoubleRepeatBot symbol={selectedSymbol} balance={connectionState.balanceUsd} /><TradingTerminal markets={markets} selectedSymbol={selectedSymbol} onSelectSymbol={setSelectedSymbol} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeContracts={activeContracts} /></>}
         {activeTab === 'dbot' && <DBotStudio markets={markets} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeBotOverride={autoConfiguredBot} />}
         {activeTab === 'botstore' && <BotStore markets={markets} onImportBotToStudio={(bot) => { setAutoConfiguredBot(bot); setActiveTab('dbot'); }} />}
         {activeTab === 'scanner' && <MarketScanner markets={markets} onAutoConfigureBot={(strategy) => { setAutoConfiguredBot(strategy); setActiveTab('dbot'); }} />}
@@ -244,12 +234,7 @@ export default function App() {
         {activeTab === 'copilot' && <AICopilotPanel markets={markets} selectedSymbol={selectedSymbol} balanceUsd={connectionState.balanceUsd} />}
         {activeTab === 'tools' && <RiskAndTools />}
       </main>
-      <footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-2">
-          <div>Deriv Ecosystem Third-Party Hub • Real-time Synthetics, DBot & Copy Trading</div>
-          <div className="text-[11px] text-slate-600">Powered by Deriv Open API</div>
-        </div>
-      </footer>
+      <footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500"><div className="max-w-7xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-2"><div>Deriv Ecosystem Third-Party Hub • Real-time Synthetics, DBot & Copy Trading</div><div className="text-[11px] text-slate-600">Powered by Deriv Open API</div></div></footer>
     </div>
   );
 }
