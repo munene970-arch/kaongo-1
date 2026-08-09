@@ -5,6 +5,7 @@ import { derivWS, AuthStatus } from './services/derivWebSocket';
 import { soundManager } from './utils/soundEffects';
 import { HeaderBar } from './components/HeaderBar';
 import { TradingTerminal } from './components/Terminal/TradingTerminal';
+import { DoubleRepeatBot } from './components/Terminal/DoubleRepeatBot';
 import { DBotStudio } from './components/BotStudio/DBotStudio';
 import { BotStore } from './components/BotStudio/BotStore';
 import { MarketScanner } from './components/Analyzer/MarketScanner';
@@ -211,9 +212,7 @@ export default function App() {
     if (account?.token) connectWithToken(connectionState.appId || REGISTERED_DERIV_APP_ID, account.token);
   };
 
-  const handleUpdateConnection = (appId: string, token: string) => {
-    connectWithToken(appId || REGISTERED_DERIV_APP_ID, token);
-  };
+  const handleUpdateConnection = (appId: string, token: string) => connectWithToken(appId || REGISTERED_DERIV_APP_ID, token);
 
   const handleOAuthRedirect = () => {
     const oauthState = 'state_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
@@ -222,28 +221,21 @@ export default function App() {
     window.location.href = oauthUrl;
   };
 
-  const handleResetDemoBalance = () => {
-    setConnectionState((prev) => ({ ...prev, balanceUsd: 10000, accountType: 'DEMO' }));
-  };
-
+  const handleResetDemoBalance = () => setConnectionState((prev) => ({ ...prev, balanceUsd: 10000, accountType: 'DEMO' }));
   const handleUpdateBalance = (newBalance: number) => {
     if (!connectionState.isAuthorized) setConnectionState((prev) => ({ ...prev, balanceUsd: Number(newBalance.toFixed(2)) }));
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-red-600 selection:text-white">
-      <HeaderBar
-        connectionState={connectionState}
-        onUpdateConnection={handleUpdateConnection}
-        onOAuthRedirect={handleOAuthRedirect}
-        onResetDemoBalance={handleResetDemoBalance}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        availableAccounts={availableAccounts}
-        onSelectAccount={handleSelectAccount}
-      />
+      <HeaderBar connectionState={connectionState} onUpdateConnection={handleUpdateConnection} onOAuthRedirect={handleOAuthRedirect} onResetDemoBalance={handleResetDemoBalance} activeTab={activeTab} setActiveTab={setActiveTab} availableAccounts={availableAccounts} onSelectAccount={handleSelectAccount} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {activeTab === 'terminal' && <TradingTerminal markets={markets} selectedSymbol={selectedSymbol} onSelectSymbol={setSelectedSymbol} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeContracts={activeContracts} />}
+        {activeTab === 'terminal' && (
+          <>
+            <DoubleRepeatBot symbol={selectedSymbol} balance={connectionState.balanceUsd} />
+            <TradingTerminal markets={markets} selectedSymbol={selectedSymbol} onSelectSymbol={setSelectedSymbol} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeContracts={activeContracts} />
+          </>
+        )}
         {activeTab === 'dbot' && <DBotStudio markets={markets} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeBotOverride={autoConfiguredBot} />}
         {activeTab === 'botstore' && <BotStore markets={markets} onImportBotToStudio={(bot) => { setAutoConfiguredBot(bot); setActiveTab('dbot'); }} />}
         {activeTab === 'scanner' && <MarketScanner markets={markets} onAutoConfigureBot={(strategy) => { setAutoConfiguredBot(strategy); setActiveTab('dbot'); }} />}
