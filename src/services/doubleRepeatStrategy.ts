@@ -36,7 +36,7 @@ class DoubleRepeatStrategyService {
   subscribeStatus(listener: StatusListener) {
     this.statusListeners.add(listener);
     listener(this.getStatus());
-    return () => this.statusListeners.delete(listener);
+    return () => { this.statusListeners.delete(listener); };
   }
 
   private notify() {
@@ -86,7 +86,6 @@ class DoubleRepeatStrategyService {
     this.lastPrediction = undefined;
     this.lastMessage = `Waiting for X X Y on ${symbol}`;
     this.running = true;
-
     this.listener = (tick: Tick) => this.onTick(tick);
     derivWS.subscribeTicks(symbol, this.listener);
     this.notify();
@@ -130,7 +129,6 @@ class DoubleRepeatStrategyService {
     this.trades += 1;
     this.lastMessage = `Pattern ${x1} ${x2} ${y} → BUY DIFFERS ${y}`;
 
-    // The live WebSocket service sends DIGITDIFF with barrier=Y and duration=1 tick.
     derivWS.purchaseContract({
       symbol: this.symbol,
       symbolName: this.symbol,
