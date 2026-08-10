@@ -1,16 +1,16 @@
 /**
- * Deriv API Application Configuration.
- * The app uses the registered Deriv OAuth application and the public
- * WebSocket API. Users still authorize their own Deriv account in OAuth
- * or paste their own API token; no token is stored in the source code.
+ * Deriv application configuration.
+ *
+ * The public WebSocket API can use App ID 1089 for token-based account
+ * connections. OAuth continues to use the registered application ID.
  */
+export const DERIV_WEBSOCKET_APP_ID = '1089';
+
 export const REGISTERED_DERIV_APP_ID =
   (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env.VITE_DERIV_APP_ID)
     ? (import.meta as any).env.VITE_DERIV_APP_ID
     : '340mh9Kwzb9IINrqS379p';
 
-// GitHub Pages deployment. Add this exact URL to the Redirect URI list
-// of the same Deriv OAuth application before testing the OAuth button.
 export const STING_REDIRECT_URI =
   (typeof import.meta !== 'undefined' && (import.meta as any).env && (import.meta as any).env.VITE_DERIV_REDIRECT_URI)
     ? (import.meta as any).env.VITE_DERIV_REDIRECT_URI
