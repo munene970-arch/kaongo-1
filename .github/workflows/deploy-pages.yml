@@ -30,8 +30,8 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build frontend
-        run: npm run build
+      - name: Build frontend only
+        run: npx vite build
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
