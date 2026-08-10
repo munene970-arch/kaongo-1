@@ -14,7 +14,7 @@ import { MarketAnalyzer } from './components/Analyzer/MarketAnalyzer';
 import { AICopilotPanel } from './components/Copilot/AICopilotPanel';
 import { RiskAndTools } from './components/AccountTools/RiskAndTools';
 import { DerivOAuthAccount, parseDerivOAuthInput, getStoredAccounts, saveStoredAccounts } from './utils/derivOAuth';
-import { REGISTERED_DERIV_APP_ID, STING_REDIRECT_URI } from './config/deriv';
+import { REGISTERED_DERIV_APP_ID, STING_REDIRECT_URI, DERIV_OAUTH_SCOPE } from './config/deriv';
 
 export default function App() {
   const [activeTab, setActiveTabState] = useState<string>('terminal');
@@ -23,17 +23,9 @@ export default function App() {
     const hashVal = tab === 'terminal' ? 'dashboard' : tab;
     if (window.location.hash !== `#${hashVal}`) window.history.replaceState(null, '', `#${hashVal}`);
   };
-
   useEffect(() => {
-    const syncTabFromHash = () => {
-      const rawHash = window.location.hash.replace('#', '').toLowerCase();
-      if (!rawHash) return;
-      if (rawHash === 'dashboard' || rawHash === 'terminal' || rawHash === 'trade') setActiveTabState('terminal');
-      else if (['dbot', 'botstore', 'scanner', 'copy', 'analyzer', 'copilot', 'tools'].includes(rawHash)) setActiveTabState(rawHash);
-    };
-    syncTabFromHash();
-    window.addEventListener('hashchange', syncTabFromHash);
-    return () => window.removeEventListener('hashchange', syncTabFromHash);
+    const sync = () => { const h = window.location.hash.replace('#', '').toLowerCase(); if (!h) return; if (['dashboard','terminal','trade'].includes(h)) setActiveTabState('terminal'); else if (['dbot','botstore','scanner','copy','analyzer','copilot','tools'].includes(h)) setActiveTabState(h); };
+    sync(); window.addEventListener('hashchange', sync); return () => window.removeEventListener('hashchange', sync);
   }, []);
 
   const [markets] = useState<MarketInfo[]>(INITIAL_MARKETS);
@@ -41,200 +33,45 @@ export default function App() {
   const [activeContracts, setActiveContracts] = useState<ActiveContract[]>([]);
   const [autoConfiguredBot, setAutoConfiguredBot] = useState<DBotStrategy | null>(null);
   const [availableAccounts, setAvailableAccounts] = useState<DerivOAuthAccount[]>(getStoredAccounts());
-  const [connectionState, setConnectionState] = useState<ConnectionState>({
-    isConnected: false,
-    mode: 'DEMO_SIMULATED',
-    appId: REGISTERED_DERIV_APP_ID,
-    accountType: 'DEMO',
-    balanceUsd: 0,
-    currency: 'USD',
-    isAuthorized: false,
-    isConnecting: false,
-    authError: null,
-  });
+  const [connectionState, setConnectionState] = useState<ConnectionState>({ isConnected:false, mode:'DEMO_SIMULATED', appId:REGISTERED_DERIV_APP_ID, accountType:'DEMO', balanceUsd:0, currency:'USD', isAuthorized:false, isConnecting:false, authError:null });
 
   const connectWithToken = (appId: string, token: string) => {
     const cleanToken = derivWS.sanitizeToken(token);
     const cleanAppId = appId?.trim() || REGISTERED_DERIV_APP_ID;
-    if (!cleanToken) {
-      setConnectionState((prev) => ({ ...prev, isConnecting: false, isAuthorized: false, authError: 'Enter a valid Deriv API token.' }));
-      return;
-    }
-    sessionStorage.setItem('deriv_token', cleanToken);
-    localStorage.setItem('deriv_app_id', cleanAppId);
-    setConnectionState((prev) => ({ ...prev, appId: cleanAppId, token: cleanToken, isConnecting: true, isAuthorized: false, authError: null }));
+    if (!cleanToken) { setConnectionState(p => ({...p,isConnecting:false,isAuthorized:false,authError:'Enter a valid Deriv API token.'})); return; }
+    sessionStorage.setItem('deriv_token', cleanToken); localStorage.setItem('deriv_token', cleanToken); localStorage.setItem('deriv_app_id', cleanAppId);
+    setConnectionState(p => ({...p,appId:cleanAppId,token:cleanToken,isConnecting:true,isAuthorized:false,authError:null}));
     derivWS.connect(cleanAppId, cleanToken);
   };
-
-  const connectWithParsedAccounts = (accounts: DerivOAuthAccount[]) => {
-    if (!accounts?.length) return;
-    saveStoredAccounts(accounts);
-    setAvailableAccounts(accounts);
-    const targetAcc = accounts.find((a) => a.type === 'REAL') || accounts[0];
-    if (targetAcc?.token) connectWithToken(REGISTERED_DERIV_APP_ID, targetAcc.token);
-  };
+  const connectWithParsedAccounts = (accounts: DerivOAuthAccount[]) => { if (!accounts?.length) return; saveStoredAccounts(accounts); setAvailableAccounts(accounts); const a=accounts.find(x=>x.type==='REAL')||accounts[0]; if(a?.token) connectWithToken(REGISTERED_DERIV_APP_ID,a.token); };
 
   useEffect(() => {
-    const handleWindowFocus = async () => {
-      if (connectionState.isAuthorized) return;
-      try {
-        if (navigator.clipboard?.readText) {
-          const text = await navigator.clipboard.readText();
-          if (text && (text.includes('token1=') || text.includes('acct1='))) connectWithParsedAccounts(parseDerivOAuthInput(text));
-        }
-      } catch (_) {}
+    const settled = new Set<string>();
+    const contractListener=(c:ActiveContract)=>{ setActiveContracts(p=>{const i=p.findIndex(x=>x.id===c.id);if(i>=0){const n=[...p];n[i]={...c};return n;}return [{...c},...p].slice(0,26);}); if(['WON','LOST','SOLD'].includes(c.status)&&!settled.has(c.id)){settled.add(c.id);if(c.isWin||c.status==='WON')soundManager.playWinSound();else soundManager.playLossSound();} };
+    const authListener=(s:AuthStatus)=>setConnectionState(cs=>({...cs,isConnected:Boolean(s.isAuthorized),mode:s.isAuthorized?'DERIV_WEBSOCKET_LIVE':'DEMO_SIMULATED',isAuthorized:s.isAuthorized,isConnecting:false,loginid:s.loginid||cs.loginid,email:s.email||cs.email,balanceUsd:s.balance!==undefined?s.balance:cs.balanceUsd,currency:s.currency||cs.currency||'USD',accountType:s.isVirtual?'DEMO':s.isVirtual===false?'REAL':cs.accountType,scopes:s.scopes||cs.scopes,activeEndpoint:s.activeEndpoint||cs.activeEndpoint,authError:s.error||null}));
+    derivWS.subscribeContracts(contractListener); derivWS.subscribeAuth(authListener);
+
+    const oauthMessage=(e:MessageEvent)=>{if(e.data?.type!=='DERIV_OAUTH_SUCCESS')return;const {accounts,token,appId}=e.data;if(Array.isArray(accounts)&&accounts.length){saveStoredAccounts(accounts);setAvailableAccounts(accounts);}if(token)connectWithToken(appId||REGISTERED_DERIV_APP_ID,token);};
+    window.addEventListener('message',oauthMessage);
+
+    const processAuth=async()=>{
+      const search=window.location.search||''; const hash=window.location.hash||''; const full=`${search} ${hash}`; const params=new URLSearchParams(search);
+      const returnedState=params.get('state'); const savedState=sessionStorage.getItem('deriv_oauth_state'); if(returnedState&&savedState&&returnedState!==savedState)console.warn('[Deriv OAuth] State mismatch'); if(returnedState)sessionStorage.removeItem('deriv_oauth_state');
+      const parsed=parseDerivOAuthInput(full); let token=sessionStorage.getItem('deriv_token')||localStorage.getItem('deriv_token')||'';
+      if(parsed.length){saveStoredAccounts(parsed);setAvailableAccounts(parsed);token=(parsed.find(a=>a.type==='REAL')||parsed[0])?.token||token;}
+      setConnectionState(p=>({...p,appId:REGISTERED_DERIV_APP_ID,token,isConnecting:Boolean(token)}));
+      if(token)derivWS.connect(REGISTERED_DERIV_APP_ID,token);
+      if(parsed.length||returnedState)window.history.replaceState({},document.title,window.location.pathname);
     };
-    window.addEventListener('focus', handleWindowFocus);
-    return () => window.removeEventListener('focus', handleWindowFocus);
-  }, [connectionState.isAuthorized]);
-
-  useEffect(() => {
-    const settledContractsSet = new Set<string>();
-
-    const handleContractUpdate = (updatedContract: ActiveContract) => {
-      setActiveContracts((prev) => {
-        const idx = prev.findIndex((c) => c.id === updatedContract.id);
-        if (idx >= 0) {
-          const clone = [...prev];
-          clone[idx] = { ...updatedContract };
-          return clone;
-        }
-        return [{ ...updatedContract }, ...prev].slice(0, 26);
-      });
-
-      if (['WON', 'LOST', 'SOLD'].includes(updatedContract.status) && !settledContractsSet.has(updatedContract.id)) {
-        settledContractsSet.add(updatedContract.id);
-        if (updatedContract.isWin || updatedContract.status === 'WON') soundManager.playWinSound();
-        else soundManager.playLossSound();
-      }
-    };
-
-    const handleAuthStatus = (status: AuthStatus) => {
-      setConnectionState((cs) => ({
-        ...cs,
-        isConnected: Boolean(status.isAuthorized),
-        mode: status.isAuthorized ? 'DERIV_WEBSOCKET_LIVE' : 'DEMO_SIMULATED',
-        isAuthorized: status.isAuthorized,
-        isConnecting: false,
-        loginid: status.loginid || cs.loginid,
-        email: status.email || cs.email,
-        balanceUsd: status.balance !== undefined ? status.balance : cs.balanceUsd,
-        currency: status.currency || cs.currency || 'USD',
-        accountType: status.isVirtual ? 'DEMO' : status.isVirtual === false ? 'REAL' : cs.accountType,
-        scopes: status.scopes || cs.scopes,
-        activeEndpoint: status.activeEndpoint || cs.activeEndpoint,
-        authError: status.error || null,
-      }));
-    };
-
-    derivWS.subscribeContracts(handleContractUpdate);
-    derivWS.subscribeAuth(handleAuthStatus);
-
-    const handleOAuthMessage = (event: MessageEvent) => {
-      if (event.data?.type !== 'DERIV_OAUTH_SUCCESS') return;
-      const { accounts, token, appId } = event.data;
-      if (Array.isArray(accounts) && accounts.length) {
-        saveStoredAccounts(accounts);
-        setAvailableAccounts(accounts);
-      }
-      if (token) connectWithToken(appId || REGISTERED_DERIV_APP_ID, token);
-    };
-    window.addEventListener('message', handleOAuthMessage);
-
-    const processOAuthAndConnect = async () => {
-      const activeAppId = REGISTERED_DERIV_APP_ID;
-      const fullUrlStr = window.location.search + ' ' + window.location.hash;
-      const urlParams = new URLSearchParams(window.location.search + window.location.hash.replace('#', '?'));
-      const returnedState = urlParams.get('state');
-      const savedState = sessionStorage.getItem('deriv_oauth_state');
-      if (returnedState && savedState && returnedState !== savedState) console.warn('[Deriv OAuth] State mismatch detected.');
-      if (returnedState) sessionStorage.removeItem('deriv_oauth_state');
-
-      const parsedAccounts = parseDerivOAuthInput(fullUrlStr);
-      let activeToken = sessionStorage.getItem('deriv_token') || localStorage.getItem('deriv_token') || '';
-
-      if (parsedAccounts.length > 0) {
-        try {
-          const serverRes = await fetch('/api/auth/capture-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accounts: parsedAccounts, rawUrl: window.location.href, state: returnedState, appId: activeAppId }),
-          });
-          const serverData = await serverRes.json();
-          if (serverData.success && serverData.capturedToken) {
-            activeToken = serverData.capturedToken;
-            if (Array.isArray(serverData.accounts) && serverData.accounts.length) {
-              saveStoredAccounts(serverData.accounts);
-              setAvailableAccounts(serverData.accounts);
-            }
-          } else {
-            saveStoredAccounts(parsedAccounts);
-            setAvailableAccounts(parsedAccounts);
-            activeToken = (parsedAccounts.find((a) => a.type === 'REAL') || parsedAccounts[0])?.token || activeToken;
-          }
-        } catch (_) {
-          saveStoredAccounts(parsedAccounts);
-          setAvailableAccounts(parsedAccounts);
-          activeToken = (parsedAccounts.find((a) => a.type === 'REAL') || parsedAccounts[0])?.token || activeToken;
-        }
-        if (activeToken) sessionStorage.setItem('deriv_token', activeToken);
-        window.history.replaceState({}, document.title, window.location.pathname);
-      } else if (availableAccounts.length > 0) {
-        setAvailableAccounts(getStoredAccounts());
-      }
-
-      setConnectionState((prev) => ({ ...prev, appId: activeAppId, token: activeToken, isConnecting: Boolean(activeToken) }));
-      if (activeToken) derivWS.connect(activeAppId, activeToken);
-    };
-
-    processOAuthAndConnect();
-
-    return () => {
-      derivWS.unsubscribeContracts(handleContractUpdate);
-      derivWS.unsubscribeAuth(handleAuthStatus);
-      window.removeEventListener('message', handleOAuthMessage);
-    };
+    processAuth();
+    return()=>{derivWS.unsubscribeContracts(contractListener);derivWS.unsubscribeAuth(authListener);window.removeEventListener('message',oauthMessage);};
   }, []);
 
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      setConnectionState((cs) => ({ ...cs, isConnected: derivWS.getIsLiveWs(), mode: derivWS.getIsLiveWs() ? 'DERIV_WEBSOCKET_LIVE' : 'DEMO_SIMULATED' }));
-    }, 2000);
-    return () => window.clearInterval(interval);
-  }, []);
+  useEffect(()=>{const i=window.setInterval(()=>setConnectionState(cs=>({...cs,isConnected:derivWS.getIsLiveWs(),mode:derivWS.getIsLiveWs()?'DERIV_WEBSOCKET_LIVE':'DEMO_SIMULATED'})),2000);return()=>window.clearInterval(i);},[]);
+  const handleSelectAccount=(a:DerivOAuthAccount)=>{if(a?.token)connectWithToken(connectionState.appId||REGISTERED_DERIV_APP_ID,a.token);};
+  const handleOAuthRedirect=()=>{const state='state_'+Math.random().toString(36).slice(2,11)+'_'+Date.now().toString(36);sessionStorage.setItem('deriv_oauth_state',state);const url=`https://oauth.deriv.com/oauth2/authorize?app_id=${encodeURIComponent(REGISTERED_DERIV_APP_ID)}&l=EN&scope=${encodeURIComponent(DERIV_OAUTH_SCOPE)}&redirect_uri=${encodeURIComponent(STING_REDIRECT_URI)}&state=${encodeURIComponent(state)}`;window.location.assign(url);};
+  const handleResetDemoBalance=()=>setConnectionState(p=>({...p,balanceUsd:10000,accountType:'DEMO'}));
+  const handleUpdateBalance=(n:number)=>{if(!connectionState.isAuthorized)setConnectionState(p=>({...p,balanceUsd:Number(n.toFixed(2))}));};
 
-  const handleSelectAccount = (account: DerivOAuthAccount) => {
-    if (account?.token) connectWithToken(connectionState.appId || REGISTERED_DERIV_APP_ID, account.token);
-  };
-
-  const handleUpdateConnection = (appId: string, token: string) => connectWithToken(appId || REGISTERED_DERIV_APP_ID, token);
-
-  const handleOAuthRedirect = () => {
-    const oauthState = 'state_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
-    sessionStorage.setItem('deriv_oauth_state', oauthState);
-    const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?app_id=${encodeURIComponent(REGISTERED_DERIV_APP_ID)}&l=EN&scope=trade&redirect_uri=${encodeURIComponent(STING_REDIRECT_URI)}&state=${encodeURIComponent(oauthState)}`;
-    window.location.href = oauthUrl;
-  };
-
-  const handleResetDemoBalance = () => setConnectionState((prev) => ({ ...prev, balanceUsd: 10000, accountType: 'DEMO' }));
-  const handleUpdateBalance = (newBalance: number) => {
-    if (!connectionState.isAuthorized) setConnectionState((prev) => ({ ...prev, balanceUsd: Number(newBalance.toFixed(2)) }));
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-red-600 selection:text-white">
-      <HeaderBar connectionState={connectionState} onUpdateConnection={handleUpdateConnection} onOAuthRedirect={handleOAuthRedirect} onResetDemoBalance={handleResetDemoBalance} activeTab={activeTab} setActiveTab={setActiveTab} availableAccounts={availableAccounts} onSelectAccount={handleSelectAccount} />
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {activeTab === 'terminal' && <><DoubleRepeatBot symbol={selectedSymbol} balance={connectionState.balanceUsd} /><TradingTerminal markets={markets} selectedSymbol={selectedSymbol} onSelectSymbol={setSelectedSymbol} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeContracts={activeContracts} /></>}
-        {activeTab === 'dbot' && <DBotStudio markets={markets} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeBotOverride={autoConfiguredBot} />}
-        {activeTab === 'botstore' && <BotStore markets={markets} onImportBotToStudio={(bot) => { setAutoConfiguredBot(bot); setActiveTab('dbot'); }} />}
-        {activeTab === 'scanner' && <MarketScanner markets={markets} onAutoConfigureBot={(strategy) => { setAutoConfiguredBot(strategy); setActiveTab('dbot'); }} />}
-        {activeTab === 'copy' && <CopyTradingHub balanceUsd={connectionState.balanceUsd} />}
-        {activeTab === 'analyzer' && <MarketAnalyzer markets={markets} onSelectMarket={(sym) => { setSelectedSymbol(sym); setActiveTab('terminal'); }} />}
-        {activeTab === 'copilot' && <AICopilotPanel markets={markets} selectedSymbol={selectedSymbol} balanceUsd={connectionState.balanceUsd} />}
-        {activeTab === 'tools' && <RiskAndTools />}
-      </main>
-      <footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500"><div className="max-w-7xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between gap-2"><div>Deriv Ecosystem Third-Party Hub • Real-time Synthetics, DBot & Copy Trading</div><div className="text-[11px] text-slate-600">Powered by Deriv Open API</div></div></footer>
-    </div>
-  );
+  return <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-red-600 selection:text-white"><HeaderBar connectionState={connectionState} onUpdateConnection={(id,t)=>connectWithToken(id||REGISTERED_DERIV_APP_ID,t)} onOAuthRedirect={handleOAuthRedirect} onResetDemoBalance={handleResetDemoBalance} activeTab={activeTab} setActiveTab={setActiveTab} availableAccounts={availableAccounts} onSelectAccount={handleSelectAccount}/><main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">{activeTab==='terminal'&&<><DoubleRepeatBot symbol={selectedSymbol} balance={connectionState.balanceUsd}/><TradingTerminal markets={markets} selectedSymbol={selectedSymbol} onSelectSymbol={setSelectedSymbol} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeContracts={activeContracts}/></>}{activeTab==='dbot'&&<DBotStudio markets={markets} balanceUsd={connectionState.balanceUsd} onUpdateBalance={handleUpdateBalance} activeBotOverride={autoConfiguredBot}/>} {activeTab==='botstore'&&<BotStore markets={markets} onImportBotToStudio={b=>{setAutoConfiguredBot(b);setActiveTab('dbot');}}/>}{activeTab==='scanner'&&<MarketScanner markets={markets} onAutoConfigureBot={b=>{setAutoConfiguredBot(b);setActiveTab('dbot');}}/>}{activeTab==='copy'&&<CopyTradingHub balanceUsd={connectionState.balanceUsd}/>} {activeTab==='analyzer'&&<MarketAnalyzer markets={markets} onSelectMarket={s=>{setSelectedSymbol(s);setActiveTab('terminal');}}/>}{activeTab==='copilot'&&<AICopilotPanel markets={markets} selectedSymbol={selectedSymbol} balanceUsd={connectionState.balanceUsd}/>} {activeTab==='tools'&&<RiskAndTools/>}</main><footer className="border-t border-slate-900 bg-slate-950 py-6 text-center text-xs text-slate-500"><div>Deriv Ecosystem Third-Party Hub • Real-time Synthetics, DBot & Copy Trading</div></footer></div>;
 }
