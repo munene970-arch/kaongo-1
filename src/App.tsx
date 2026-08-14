@@ -29,6 +29,7 @@ export default function App() {
   }, []);
 
   const [markets] = useState<MarketInfo[]>(INITIAL_MARKETS);
+  const [derivNickname, setDerivNickname] = useState<string>('');
   const [selectedSymbol, setSelectedSymbol] = useState<MarketSymbol>('R_75');
   const [activeContracts, setActiveContracts] = useState<ActiveContract[]>([]);
   const [autoConfiguredBot, setAutoConfiguredBot] = useState<DBotStrategy | null>(null);
@@ -48,7 +49,51 @@ export default function App() {
   useEffect(() => {
     const settled = new Set<string>();
     const contractListener=(c:ActiveContract)=>{ setActiveContracts(p=>{const i=p.findIndex(x=>x.id===c.id);if(i>=0){const n=[...p];n[i]={...c};return n;}return [{...c},...p].slice(0,26);}); if(['WON','LOST','SOLD'].includes(c.status)&&!settled.has(c.id)){settled.add(c.id);if(c.isWin||c.status==='WON')soundManager.playWinSound();else soundManager.playLossSound();} };
-    const authListener=(s:AuthStatus)=>setConnectionState(cs=>({...cs,isConnected:Boolean(s.isAuthorized),mode:s.isAuthorized?'DERIV_WEBSOCKET_LIVE':'DEMO_SIMULATED',isAuthorized:s.isAuthorized,isConnecting:false,loginid:s.loginid||cs.loginid,email:s.email||cs.email,balanceUsd:s.balance!==undefined?s.balance:cs.balanceUsd,currency:s.currency||cs.currency||'USD',accountType:s.isVirtual?'DEMO':s.isVirtual===false?'REAL':cs.accountType,scopes:s.scopes||cs.scopes,activeEndpoint:s.activeEndpoint||cs.activeEndpoint,authError:s.error||null}));
+    const authListener=(s:AuthStatus)=>{
+  setConnectionState(cs=>({...cs,isConnected:Boolean(s.isAuthorized),mode:s.isAuthorized?'DERIV_WEBSOCKET_LIVE':'DEMO_SIMULATED',isAuthorized:s.isAuthorized,isConnecting:false,loginid:s.loginid||cs.loginid,email:s.email||cs.email,balanceUsd:s.balance!==undefined?s.balance:cs.balanceUsd,currency:s.currency||cs.currency||'USD',accountType:s.isVirtual?'DEMO':s.isVirtual===false?'REAL':cs.accountType,scopes:s.scopes||cs.scopes,activeEndpoint:s.activeEndpoint||cs.activeEndpoint,authError:s.error||null}));
+
+  if (s.isAuthorized) {
+    fetch('/.netlify/functions/account-nickname', {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+      cache: 'no-store',
+    })
+      .then(async (response) => {
+        const body = await response.text();
+
+        if (!response.ok) {
+          throw new Error(body || `Nickname request failed (${response.status})`);
+        }
+
+        try {
+          return JSON.parse(body);
+        } catch {
+          return { nickname: body };
+        }
+      })
+      .then((data) => {
+        const nickname =
+          typeof data?.nickname === 'string'
+            ? data.nickname.trim()
+            : '';
+
+        if (nickname) {
+          setDerivNickname(nickname);
+        }
+      })
+      .catch((error) => {
+        console.warn(
+          '[Deriv nickname] Request failed; trading connection remains unaffected.',
+          error
+        );
+        setDerivNickname('');
+      });
+  } else {
+    setDerivNickname('');
+  }
+};
     derivWS.subscribeContracts(contractListener); derivWS.subscribeAuth(authListener);
 
     const oauthMessage=(e:MessageEvent)=>{if(e.data?.type!=='DERIV_OAUTH_SUCCESS')return;const {accounts,token,appId}=e.data;if(Array.isArray(accounts)&&accounts.length){saveStoredAccounts(accounts);setAvailableAccounts(accounts);}if(token)connectWithToken(appId||REGISTERED_DERIV_APP_ID,token);};
