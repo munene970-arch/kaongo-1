@@ -6,6 +6,7 @@ import { InstallAppModal } from './InstallAppModal';
 
 interface HeaderBarProps {
   connectionState: ConnectionState;
+  derivNickname?: string;
   onUpdateConnection: (appId: string, token: string) => void;
   onOAuthRedirect?: (appId: string) => void;
   onResetDemoBalance: () => void;
@@ -17,6 +18,7 @@ interface HeaderBarProps {
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
   connectionState,
+  derivNickname,
   onUpdateConnection,
   onOAuthRedirect,
   onResetDemoBalance,
@@ -64,7 +66,13 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <div className="flex flex-wrap items-center gap-2 justify-end">
             <div className={`flex items-center space-x-1.5 px-3 py-2 rounded-xl text-xs font-semibold border ${connectionState.isAuthorized ? 'bg-emerald-950/90 border-emerald-500/80 text-emerald-300' : 'bg-slate-800/90 border-slate-700/80 text-slate-300'}`}>
               <span className={`w-2 h-2 rounded-full ${connectionState.isAuthorized ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-              <span>{connectionState.isAuthorized ? `LIVE ${connectionState.loginid || ''}` : connectionState.isConnecting ? 'CONNECTING…' : 'NOT CONNECTED'}</span>
+              <span>
+  {connectionState.isAuthorized
+    ? `LIVE ${connectionState.loginid || ''}${derivNickname ? ` • ${derivNickname}` : ''}`
+    : connectionState.isConnecting
+      ? 'CONNECTING…'
+      : 'NOT CONNECTED'}
+</span>
             </div>
 
             <div className="flex items-center gap-1 bg-slate-950 border border-slate-700 rounded-xl p-1">
