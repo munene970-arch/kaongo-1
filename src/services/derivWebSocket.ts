@@ -210,15 +210,16 @@ ws.onclose = () => {
   this.isConnected = false;
   this.isAuthorized = false;
 
-  console.warn('[Deriv WS] Connection closed.');
+  console.warn(
+  `[Deriv WS] Connection closed. code=${ws?.code ?? 'unknown'} reason=${ws?.reason || 'none'}`
+);
 
   if (!this.intentionallyClosed && this.token) {
     this.notifyAuth({
       isAuthorized: false,
       appId: this.appId,
       activeEndpoint: this.activeEndpointUrl,
-      error: 'Deriv WebSocket connection closed. Please try Connect again.',
-    });
+    error: `Deriv WebSocket connection closed. Code: ${ws?.code ?? 'unknown'} Reason: ${ws?.reason || 'none'}`,});
   } else {
     this.notifyAuth({
       isAuthorized: false,
