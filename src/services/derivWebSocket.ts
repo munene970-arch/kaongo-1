@@ -226,16 +226,9 @@ ws.onclose = () => {
       activeEndpoint: this.activeEndpointUrl,
       error: this.token ? 'WebSocket connection closed.' : 'Not authorized.',
     });
-        } else {
-          this.notifyAuth({
-            isAuthorized: false,
-            appId: this.appId,
-            activeEndpoint: this.activeEndpointUrl,
-            error: this.token ? 'WebSocket connection closed.' : 'Not authorized.',
-          });
-        }
-      };
-    } catch (error) {
+  }
+ };
+}catch (error) {
       console.error('[Deriv WS] Failed to create WebSocket:', error);
       this.isConnected = false;
       if (!this.intentionallyClosed && this.token) this.scheduleReconnect(generation);
