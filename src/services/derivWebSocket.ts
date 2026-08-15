@@ -203,7 +203,7 @@ class DerivWebSocketService {
   });
 };
 
-ws.onclose = () => {
+ws.onclose = (event) => {
   if (generation !== this.connectGeneration || ws !== this.ws) return;
 
   this.ws = null;
@@ -211,7 +211,7 @@ ws.onclose = () => {
   this.isAuthorized = false;
 
   console.warn(
-  `[Deriv WS] Connection closed. code=${ws?.code ?? 'unknown'} reason=${ws?.reason || 'none'}`
+  `[Deriv WS] Connection closed. code=${event.code} reason=${event.reason || 'none'}`
 );
 
   if (!this.intentionallyClosed && this.token) {
@@ -219,7 +219,7 @@ ws.onclose = () => {
       isAuthorized: false,
       appId: this.appId,
       activeEndpoint: this.activeEndpointUrl,
-    error: `Deriv WebSocket connection closed. Code: ${ws?.code ?? 'unknown'} Reason: ${ws?.reason || 'none'}`,});
+    error: `Deriv WebSocket connection closed. Code: ${event.code} Reason: ${event.reason || 'none'}`});
   } else {
     this.notifyAuth({
       isAuthorized: false,
