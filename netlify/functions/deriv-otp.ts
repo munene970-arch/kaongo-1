@@ -19,24 +19,20 @@ function json(data: unknown, status = 200) {
 }
 
 export default async (request: Request) => {
-  if (request.method !== 'POST') {
-    return json({ error: 'Method Not Allowed' }, 405);
-  }
+  if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
 
-  const appId = process.env.DERIV_APP_ID;
-  const token = process.env.DERIV_TOKEN;
-  if (!appId || !token) {
-    return json({ error: 'Missing DERIV_APP_ID or DERIV_TOKEN' }, 500);
-  }
-
-  let body: { accountId?: string } = {};
+  let body: { appId?: string; token?: string; accountId?: string };
   try {
     body = await request.json();
   } catch {
-    // Empty request body is allowed; the account will be discovered below.
+    return json({ error: 'Invalid JSON request.' }, 400);
   }
 
-  let accountId = body.accountId?.trim() || '';
+  const appId = String(body.appId || '').trim();
+  const token = String(body.token || '').trim().replace(/^bearer\s+/i, '').replace(/[\s'"\r\n\t]/g, '');
+  if (!appId || !token) return json({ error: 'App ID and Deriv token are required.' }, 400);
+
+  let accountId = String(body.accountId || '').trim();
 
   if (!accountId) {
     const accountsResponse = await fetch('https://api.derivws.com/account/v1/accounts', {
@@ -62,7 +58,6 @@ export default async (request: Request) => {
           : Array.isArray(parsed?.data)
             ? parsed.data
             : [];
-
       const first = accounts[0];
       accountId = String(first?.account_id || first?.accountId || first?.loginid || first?.account || first?.id || '');
     } catch {
@@ -70,9 +65,7 @@ export default async (request: Request) => {
     }
   }
 
-  if (!accountId) {
-    return json({ error: 'No Deriv account ID was found for this token.' }, 400);
-  }
+  if (!accountId) return json({ error: 'No Deriv account ID was found for this token.' }, 400);
 
   const otpResponse = await fetch(
     `https://api.derivws.com/trading/v1/options/accounts/${encodeURIComponent(accountId)}/otp`,
@@ -88,20 +81,12 @@ export default async (request: Request) => {
 
   const otpText = await otpResponse.text();
   let parsed: unknown = otpText;
-  try {
-    parsed = JSON.parse(otpText);
-  } catch {
-    // Keep the raw response for diagnostics below.
-  }
+  try { parsed = JSON.parse(otpText); } catch {}
 
-  if (!otpResponse.ok) {
-    return json({ error: 'Deriv OTP request failed.', details: parsed }, otpResponse.status);
-  }
+  if (!otpResponse.ok) return json({ error: 'Deriv OTP request failed.', details: parsed }, otpResponse.status);
 
   const wsUrl = findWebSocketUrl(parsed) || (typeof parsed === 'string' && parsed.startsWith('wss://') ? parsed : null);
-  if (!wsUrl) {
-    return json({ error: 'Deriv OTP response did not contain a wss:// URL.', response: parsed }, 502);
-  }
+  if (!wsUrl) return json({ error: 'Deriv OTP response did not contain a wss:// URL.', response: parsed }, 502);
 
   return json({ url: wsUrl, accountId });
 };
