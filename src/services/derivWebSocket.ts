@@ -188,9 +188,19 @@ class DerivWebSocketService {
       };
 
       ws.onerror = () => {
-        if (generation !== this.connectGeneration || ws !== this.ws) return;
-        console.warn('[Deriv WS] WebSocket error. Waiting for close/reconnect.');
-      };
+  if (generation !== this.connectGeneration || ws !== this.ws) return;
+
+  console.error('[Deriv WS] WebSocket error.');
+
+  this.isConnected = false;
+  this.isAuthorized = false;
+
+  this.notifyAuth({
+    isAuthorized: false,
+    appId: this.appId,
+    activeEndpoint: this.activeEndpointUrl,
+    error: 'Unable to connect to the Deriv WebSocket. Please check your App ID, token, network connection, or browser connection.',
+  });
 
       ws.onclose = () => {
         if (generation !== this.connectGeneration || ws !== this.ws) return;
@@ -200,7 +210,12 @@ class DerivWebSocketService {
         console.warn('[Deriv WS] Connection closed.');
 
         if (!this.intentionallyClosed && this.token) {
-          this.scheduleReconnect(generation);
+  this.notifyAuth({
+    isAuthorized: false,
+    appId: this.appId,
+    activeEndpoint: this.activeEndpointUrl,
+    error: 'Deriv WebSocket connection closed. Please try Connect again.',
+  });
         } else {
           this.notifyAuth({
             isAuthorized: false,
