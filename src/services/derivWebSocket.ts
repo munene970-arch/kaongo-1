@@ -19,7 +19,6 @@ export interface AuthStatus {
 }
 
 export type AuthListener = (status: AuthStatus) => void;
-
 type PendingTrade = { contract: ActiveContract; currency: string };
 
 class DerivWebSocketService {
@@ -72,7 +71,6 @@ class DerivWebSocketService {
     this.isConnected = false;
     this.reconnectAttempts = 0;
     this.connectGeneration += 1;
-
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -109,14 +107,12 @@ class DerivWebSocketService {
 
   private async getAuthenticatedWebSocketUrl(generation: number): Promise<{ url: string; accountId?: string }> {
     if (!this.token) throw new Error('Enter a Deriv API token to authorize this account.');
-
     const response = await fetch('/.netlify/functions/deriv-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ appId: this.appId, token: this.token, accountId: this.cachedLoginId || undefined }),
       cache: 'no-store',
     });
-
     const body = await response.text();
     let data: any;
     try { data = JSON.parse(body); } catch { throw new Error(body || `OTP request failed (${response.status})`); }
@@ -127,79 +123,70 @@ class DerivWebSocketService {
 
   private openSocket(generation: number) {
     if (generation !== this.connectGeneration || this.intentionallyClosed) return;
+    this.getAuthenticatedWebSocketUrl(generation).then(({ url, accountId }) => {
+      if (generation !== this.connectGeneration || this.intentionallyClosed) return;
+      this.activeEndpointUrl = url;
+      if (accountId) this.cachedLoginId = accountId;
+      const ws = new WebSocket(url);
+      this.ws = ws;
 
-    this.getAuthenticatedWebSocketUrl(generation)
-      .then(({ url, accountId }) => {
-        if (generation !== this.connectGeneration || this.intentionallyClosed) return;
-        this.activeEndpointUrl = url;
-        if (accountId) this.cachedLoginId = accountId;
+      ws.onopen = () => {
+        if (generation !== this.connectGeneration || ws !== this.ws) {
+          try { ws.close(); } catch (_) {}
+          return;
+        }
+        this.isConnected = true;
+        this.isAuthorized = true;
+        this.reconnectAttempts = 0;
+        this.notifyAuth({
+          isAuthorized: true,
+          loginid: this.cachedLoginId,
+          email: this.cachedEmail,
+          currency: this.currency,
+          isVirtual: this.cachedIsVirtual,
+          appId: this.appId,
+          activeEndpoint: this.activeEndpointUrl,
+          error: null,
+        });
+        ws.send(JSON.stringify({ balance: 1, subscribe: 1 }));
+        ws.send(JSON.stringify({ get_settings: 1 }));
+        this.activeSubscriptions.forEach((symbol) => this.sendTickSubscription(symbol));
+      };
 
-        const ws = new WebSocket(url);
-        this.ws = ws;
+      ws.onmessage = (event) => {
+        if (generation !== this.connectGeneration || ws !== this.ws) return;
+        try { this.handleMessage(JSON.parse(event.data)); }
+        catch (error) { console.error('[Deriv WS] Invalid JSON message:', error); }
+      };
 
-        ws.onopen = () => {
-          if (generation !== this.connectGeneration || ws !== this.ws) {
-            try { ws.close(); } catch (_) {}
-            return;
-          }
-
-          this.isConnected = true;
-          this.isAuthorized = true;
-          this.reconnectAttempts = 0;
-          console.info('[Deriv WS] Authenticated OTP WebSocket connected.');
-
-          this.notifyAuth({
-            isAuthorized: true,
-            loginid: this.cachedLoginId,
-            email: this.cachedEmail,
-            currency: this.currency,
-            isVirtual: this.cachedIsVirtual,
-            appId: this.appId,
-            activeEndpoint: this.activeEndpointUrl,
-            error: null,
-          });
-
-          // The OTP URL is already authenticated. Never send the Bearer token over WebSocket.
-          ws.send(JSON.stringify({ balance: 1, subscribe: 1 }));
-          ws.send(JSON.stringify({ get_settings: 1 }));
-          this.activeSubscriptions.forEach((symbol) => this.sendTickSubscription(symbol));
-        };
-
-        ws.onmessage = (event) => {
-          if (generation !== this.connectGeneration || ws !== this.ws) return;
-          try { this.handleMessage(JSON.parse(event.data)); }
-          catch (error) { console.error('[Deriv WS] Invalid JSON message:', error); }
-        };
-
-        ws.onerror = () => {
-          if (generation !== this.connectGeneration || ws !== this.ws) return;
-          this.isConnected = false;
-          this.isAuthorized = false;
-          this.notifyAuth({ isAuthorized: false, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error: 'Authenticated Deriv WebSocket error.' });
-        };
-
-        ws.onclose = (event) => {
-          if (generation !== this.connectGeneration || ws !== this.ws) return;
-          this.ws = null;
-          this.isConnected = false;
-          this.isAuthorized = false;
-          const error = `Deriv WebSocket connection closed. Code: ${event.code} Reason: ${event.reason || 'none'}`;
-          console.warn('[Deriv WS]', error);
-          if (!this.intentionallyClosed && this.token) {
-            this.notifyAuth({ isAuthorized: false, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error });
-            this.scheduleReconnect(generation);
-          }
-        };
-      })
-      .catch((error) => {
-        if (generation !== this.connectGeneration || this.intentionallyClosed) return;
+      ws.onerror = () => {
+        if (generation !== this.connectGeneration || ws !== this.ws) return;
         this.isConnected = false;
         this.isAuthorized = false;
-        const message = error instanceof Error ? error.message : String(error);
-        console.error('[Deriv WS] Failed to obtain authenticated WebSocket URL:', message);
-        this.notifyAuth({ isAuthorized: false, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error: message });
-        if (this.token) this.scheduleReconnect(generation);
-      });
+        this.notifyAuth({ isAuthorized: false, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error: 'Authenticated Deriv WebSocket error.' });
+      };
+
+      ws.onclose = (event) => {
+        if (generation !== this.connectGeneration || ws !== this.ws) return;
+        this.ws = null;
+        this.isConnected = false;
+        this.isAuthorized = false;
+        const error = `Deriv WebSocket connection closed. Code: ${event.code} Reason: ${event.reason || 'none'}`;
+        console.warn('[Deriv WS]', error);
+        if (!this.intentionallyClosed && this.token) {
+          this.notifyAuth({ isAuthorized: false, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error });
+          this.scheduleReconnect(generation);
+        }
+      };
+    }).catch((error) => {
+      if (generation !== this.connectGeneration || this.intentionallyClosed) return;
+      this.isConnected = false;
+      this.isAuthorized = false;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[Deriv WS] Failed to obtain authenticated WebSocket URL:', message);
+      this.notifyAuth({ isAuthorized: false, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error: message });
+      if (this.token) this.scheduleReconnect(generation);
+    });
   }
 
   private scheduleReconnect(generation: number) {
@@ -318,12 +305,26 @@ class DerivWebSocketService {
     const duration = Math.max(1, Math.floor(params.durationTicks || 1));
     return {
       id: `PENDING_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      symbol: params.symbol, symbolName: params.symbolName, contractType: params.contractType,
-      entrySpot: spot, currentSpot: spot, barrier: params.barrier, targetDigit: params.targetDigit,
-      multiplier: params.multiplier, growthRate: params.growthRate, takeProfit: params.takeProfit, stopLoss: params.stopLoss,
-      stake: params.stake, potentialPayout: params.stake, currentProfit: 0, startTime: Date.now(),
-      expiryTime: Date.now() + duration * 1000, durationTicks: duration, remainingTicks: duration,
-      status: 'OPEN', historySpots: spot ? [spot] : [],
+      symbol: params.symbol,
+      symbolName: params.symbolName,
+      contractType: params.contractType,
+      entrySpot: spot,
+      currentSpot: spot,
+      barrier: params.barrier,
+      targetDigit: params.targetDigit,
+      multiplier: params.multiplier,
+      growthRate: params.growthRate,
+      takeProfit: params.takeProfit,
+      stopLoss: params.stopLoss,
+      stake: params.stake,
+      potentialPayout: params.stake,
+      currentProfit: 0,
+      startTime: Date.now(),
+      expiryTime: Date.now() + duration * 1000,
+      durationTicks: duration,
+      remainingTicks: duration,
+      status: 'OPEN',
+      historySpots: spot ? [spot] : [],
     };
   }
 
@@ -331,8 +332,12 @@ class DerivWebSocketService {
     const contract = this.createClientContract(params);
     const clientId = contract.id;
     const stake = Number(params.stake);
+
     if (!Number.isFinite(stake) || stake <= 0) {
-      contract.status = 'LOST'; contract.currentProfit = 0; this.notifyContract(contract); return contract;
+      contract.status = 'LOST';
+      contract.currentProfit = 0;
+      this.notifyContract(contract);
+      return contract;
     }
 
     this.activeContracts.set(clientId, contract);
@@ -340,30 +345,58 @@ class DerivWebSocketService {
     this.notifyContract(contract);
 
     if (!this.isAuthorized || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      contract.status = 'LOST'; contract.isWin = false; contract.currentProfit = -stake;
-      this.pendingTrades.delete(clientId); this.notifyContract(contract); return contract;
+      contract.status = 'LOST';
+      contract.isWin = false;
+      contract.currentProfit = -stake;
+      this.pendingTrades.delete(clientId);
+      this.notifyContract(contract);
+      console.warn('[Deriv WS] Trade rejected locally: account is not authorized/live.');
+      return contract;
     }
 
     const request: Record<string, any> = {
-      proposal: 1, amount: stake, basis: 'stake', contract_type: params.contractType,
-      currency: this.currency, duration: Math.max(1, Math.floor(params.durationTicks || 1)), duration_unit: 't',
-      symbol: params.symbol, passthrough: { client_contract_id: clientId },
+      proposal: 1,
+      amount: stake,
+      basis: 'stake',
+      contract_type: params.contractType,
+      currency: this.currency,
+      duration: Math.max(1, Math.floor(params.durationTicks || 1)),
+      duration_unit: 't',
+      // New authenticated Deriv options WebSocket uses underlying_symbol.
+      // The legacy `symbol` property is rejected with InputValidationFailed.
+      underlying_symbol: params.symbol,
+      passthrough: { client_contract_id: clientId },
     };
 
     if (['DIGITDIFF', 'DIGITMATCH', 'DIGITOVER', 'DIGITUNDER'].includes(params.contractType)) {
       const digit = params.targetDigit;
       if (digit === undefined || !Number.isInteger(digit) || digit < 0 || digit > 9) {
-        contract.status = 'LOST'; contract.isWin = false; contract.currentProfit = -stake;
-        this.pendingTrades.delete(clientId); this.notifyContract(contract); return contract;
+        contract.status = 'LOST';
+        contract.isWin = false;
+        contract.currentProfit = -stake;
+        this.pendingTrades.delete(clientId);
+        this.notifyContract(contract);
+        return contract;
       }
-      request.barrier = String(digit); contract.barrier = digit; contract.targetDigit = digit;
-    } else if (params.barrier !== undefined) request.barrier = String(params.barrier);
-
-    try { this.ws.send(JSON.stringify(request)); }
-    catch (_) {
-      contract.status = 'LOST'; contract.isWin = false; contract.currentProfit = -stake;
-      this.pendingTrades.delete(clientId); this.notifyContract(contract);
+      request.barrier = String(digit);
+      contract.barrier = digit;
+      contract.targetDigit = digit;
+    } else if (params.barrier !== undefined) {
+      request.barrier = String(params.barrier);
     }
+
+    try {
+      console.info('[Deriv WS] Requesting live proposal:', request);
+      this.ws.send(JSON.stringify(request));
+    } catch (error) {
+      console.error('[Deriv WS] Failed to send proposal:', error);
+      contract.status = 'LOST';
+      contract.isWin = false;
+      contract.currentProfit = -stake;
+      this.pendingTrades.delete(clientId);
+      this.notifyContract(contract);
+    }
+
     return contract;
   }
 
@@ -372,19 +405,36 @@ class DerivWebSocketService {
     if (!clientId) return;
     const pending = this.pendingTrades.get(clientId);
     if (!pending) return;
+
     if (data.error || !data.proposal?.id) {
-      pending.contract.status = 'LOST'; pending.contract.isWin = false; pending.contract.currentProfit = -pending.contract.stake;
-      this.pendingTrades.delete(clientId); this.notifyContract(pending.contract); return;
+      pending.contract.status = 'LOST';
+      pending.contract.isWin = false;
+      pending.contract.currentProfit = -pending.contract.stake;
+      this.pendingTrades.delete(clientId);
+      this.notifyContract(pending.contract);
+      return;
     }
+
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const proposalId = String(data.proposal.id);
     const askPrice = Number(data.proposal.ask_price ?? pending.contract.stake);
+    const buyRequest = {
+      buy: proposalId,
+      price: Math.max(pending.contract.stake, askPrice),
+      passthrough: { client_contract_id: clientId },
+    };
     pending.contract.potentialPayout = Number(data.proposal.payout) || pending.contract.stake;
+
     try {
-      this.ws.send(JSON.stringify({ buy: proposalId, price: Math.max(pending.contract.stake, askPrice), passthrough: { client_contract_id: clientId } }));
-    } catch (_) {
-      pending.contract.status = 'LOST'; pending.contract.isWin = false; pending.contract.currentProfit = -pending.contract.stake;
-      this.pendingTrades.delete(clientId); this.notifyContract(pending.contract);
+      console.info('[Deriv WS] Buying live proposal:', proposalId);
+      this.ws.send(JSON.stringify(buyRequest));
+    } catch (error) {
+      console.error('[Deriv WS] Failed to send buy request:', error);
+      pending.contract.status = 'LOST';
+      pending.contract.isWin = false;
+      pending.contract.currentProfit = -pending.contract.stake;
+      this.pendingTrades.delete(clientId);
+      this.notifyContract(pending.contract);
     }
   }
 
@@ -392,10 +442,16 @@ class DerivWebSocketService {
     const clientId = data.echo_req?.passthrough?.client_contract_id || data.buy?.passthrough?.client_contract_id;
     if (!clientId || !this.pendingTrades.has(clientId)) return;
     const pending = this.pendingTrades.get(clientId)!;
+
     if (data.error || !data.buy?.contract_id) {
-      pending.contract.status = 'LOST'; pending.contract.isWin = false; pending.contract.currentProfit = -pending.contract.stake;
-      this.pendingTrades.delete(clientId); this.notifyContract(pending.contract); return;
+      pending.contract.status = 'LOST';
+      pending.contract.isWin = false;
+      pending.contract.currentProfit = -pending.contract.stake;
+      this.pendingTrades.delete(clientId);
+      this.notifyContract(pending.contract);
+      return;
     }
+
     const liveId = String(data.buy.contract_id);
     this.liveToClientContract.set(liveId, clientId);
     this.pendingTrades.delete(clientId);
@@ -408,7 +464,10 @@ class DerivWebSocketService {
     this.activeContracts.delete(clientId);
     this.activeContracts.set(liveId, pending.contract);
     this.notifyContract(pending.contract);
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ proposal_open_contract: 1, contract_id: liveId, subscribe: 1 }));
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ proposal_open_contract: 1, contract_id: liveId, subscribe: 1 }));
+    }
   }
 
   private handleContractUpdate(poc: any) {
@@ -435,11 +494,15 @@ class DerivWebSocketService {
       const profit = Number(poc.profit) || 0;
       contract.currentProfit = profit;
       contract.isWin = profit > 0;
-      contract.status = status === 'sold' || poc.is_sold ? 'SOLD' : profit > 0 ? 'WON' : 'LOST';
+      contract.status = status === 'sold' || poc.is_sold ? 'SOLD' : (profit > 0 ? 'WON' : 'LOST');
       contract.remainingTicks = 0;
+      if (poc.exit_tick !== undefined) contract.exitSpot = Number(poc.exit_tick);
+      this.activeContracts.set(contract.id, contract);
     } else {
       contract.status = 'OPEN';
-      if (poc.tick_count !== undefined && poc.tick_count !== null) contract.remainingTicks = Math.max(0, contract.durationTicks - Number(poc.tick_count));
+      if (poc.tick_count !== undefined && poc.tick_count !== null) {
+        contract.remainingTicks = Math.max(0, contract.durationTicks - Number(poc.tick_count));
+      }
     }
     this.notifyContract(contract);
   }
