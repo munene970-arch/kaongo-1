@@ -21,6 +21,8 @@ export interface AuthStatus {
 export type AuthListener = (status: AuthStatus) => void;
 type PendingTrade = { contract: ActiveContract; currency: string };
 
+type ClientContract = ActiveContract & { liveContractId?: string };
+
 class DerivWebSocketService {
   private ws: WebSocket | null = null;
   private appId = REGISTERED_DERIV_APP_ID;
@@ -40,6 +42,8 @@ class DerivWebSocketService {
   private activeContracts = new Map<string, ActiveContract>();
   private pendingTrades = new Map<string, PendingTrade>();
   private liveToClientContract = new Map<string, string>();
+  private settlementPollTimers = new Map<string, number>();
+  private settledContracts = new Set<string>();
   private contractListeners = new Set<ContractListener>();
   private authListeners = new Set<AuthListener>();
   private cachedEmail?: string;
@@ -80,6 +84,8 @@ class DerivWebSocketService {
     this.isConnected = false;
     this.connectGeneration += 1;
     if (this.reconnectTimer !== null) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.settlementPollTimers.forEach((timer) => window.clearTimeout(timer));
+    this.settlementPollTimers.clear();
     this.closeSocket(false);
     this.notifyAuth({ isAuthorized: false, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error: null });
   }
@@ -211,6 +217,8 @@ class DerivWebSocketService {
       pending.contract.status = 'LOST'; pending.contract.isWin = false; pending.contract.currentProfit = -pending.contract.stake; this.notifyContract(pending.contract);
       this.refreshBalance();
     }
+    const contractId = data.echo_req?.contract_id;
+    if (contractId) this.clearSettlementPolling(String(contractId));
     this.notifyAuth({ isAuthorized: this.isAuthorized, loginid: this.cachedLoginId, email: this.cachedEmail, currency: this.currency, appId: this.appId, activeEndpoint: this.activeEndpointUrl, error: `${code}: ${message}` });
   }
 
@@ -265,7 +273,7 @@ class DerivWebSocketService {
       request.barrier = String(digit); contract.barrier = digit; contract.targetDigit = digit;
     } else if (params.barrier !== undefined) request.barrier = String(params.barrier);
     try { console.info('[Deriv WS] Requesting live proposal:', request); this.ws.send(JSON.stringify(request)); }
-    catch (error) { console.error('[Deriv WS] Failed to send proposal:', error); contract.status = 'LOST'; contract.isWin = false; contract.currentProfit = -stake; this.pendingTrades.delete(clientId); this.notifyContract(contract); }
+    catch (error) { console.error('[Deriv WS] Failed to send proposal:', error); contract.status = 'LOST'; contract.isWin = false; contract.currentProfit = -stake; this.pendingTrades.delete(clientId); this.notifyContract(contract); this.refreshBalance(); }
     return contract;
   }
 
@@ -289,32 +297,130 @@ class DerivWebSocketService {
     const pending = this.pendingTrades.get(clientId)!;
     if (data.error || !data.buy?.contract_id) { pending.contract.status = 'LOST'; pending.contract.isWin = false; pending.contract.currentProfit = -pending.contract.stake; this.pendingTrades.delete(clientId); this.notifyContract(pending.contract); this.refreshBalance(); return; }
     const liveId = String(data.buy.contract_id);
-    this.liveToClientContract.set(liveId, clientId); this.pendingTrades.delete(clientId);
-    pending.contract.id = liveId; pending.contract.entrySpot = Number(data.buy.start_spot ?? pending.contract.entrySpot); pending.contract.currentSpot = pending.contract.entrySpot; pending.contract.potentialPayout = Number(data.buy.payout) || pending.contract.potentialPayout; pending.contract.historySpots = pending.contract.entrySpot ? [pending.contract.entrySpot] : []; pending.contract.status = 'OPEN'; this.activeContracts.delete(clientId); this.activeContracts.set(liveId, pending.contract); this.notifyContract(pending.contract);
+    this.liveToClientContract.set(liveId, clientId);
+    this.pendingTrades.delete(clientId);
+
+    // Keep the client id on the visible contract so the UI does not create a second
+    // PENDING row when the real Deriv contract id arrives. The real id is retained
+    // internally for settlement and cash-out requests.
+    const clientContract = pending.contract as ClientContract;
+    clientContract.liveContractId = liveId;
+    clientContract.entrySpot = Number(data.buy.start_spot ?? clientContract.entrySpot);
+    clientContract.currentSpot = clientContract.entrySpot;
+    clientContract.potentialPayout = Number(data.buy.payout) || clientContract.potentialPayout;
+    clientContract.historySpots = clientContract.entrySpot ? [clientContract.entrySpot] : [];
+    clientContract.status = 'OPEN';
+    this.activeContracts.delete(clientId);
+    this.activeContracts.set(clientId, clientContract);
+    this.notifyContract(clientContract);
     this.refreshBalance();
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ proposal_open_contract: 1, contract_id: liveId, subscribe: 1 }));
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ proposal_open_contract: 1, contract_id: liveId, subscribe: 1 }));
+      this.beginSettlementPolling(liveId, 0);
+    }
+  }
+
+  private beginSettlementPolling(liveId: string, attempt: number) {
+    if (this.settledContracts.has(liveId) || this.settlementPollTimers.has(liveId)) return;
+    if (attempt >= 20) {
+      this.settlementPollTimers.delete(liveId);
+      console.warn('[Deriv WS] Settlement polling timed out:', liveId);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      this.settlementPollTimers.delete(liveId);
+      if (this.settledContracts.has(liveId)) return;
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        try { this.ws.send(JSON.stringify({ proposal_open_contract: 1, contract_id: liveId })); } catch (_) {}
+      }
+      this.beginSettlementPolling(liveId, attempt + 1);
+    }, attempt === 0 ? 300 : 350);
+    this.settlementPollTimers.set(liveId, timer);
+  }
+
+  private clearSettlementPolling(liveId: string) {
+    const timer = this.settlementPollTimers.get(liveId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.settlementPollTimers.delete(liveId);
+  }
+
+  private getContractProfit(poc: any, contract: ActiveContract): number {
+    const directProfit = Number(poc?.profit);
+    if (Number.isFinite(directProfit)) return directProfit;
+
+    const sellPrice = Number(poc?.sell_price);
+    const buyPrice = Number(poc?.buy_price);
+    if (Number.isFinite(sellPrice) && Number.isFinite(buyPrice)) return sellPrice - buyPrice;
+
+    const payout = Number(poc?.payout);
+    if (Number.isFinite(payout) && Number.isFinite(buyPrice)) return payout - buyPrice;
+
+    const status = String(poc?.status || '').toLowerCase();
+    if (['lost', 'sold'].includes(status) || poc?.is_sold || poc?.is_expired || poc?.is_settled) return -Number(contract.stake || 0);
+    return Number(contract.currentProfit) || 0;
   }
 
   private handleContractUpdate(poc: any) {
     if (!poc) return;
-    const liveId = String(poc.contract_id || poc.id || ''); const clientId = this.liveToClientContract.get(liveId) || liveId; const contract = this.activeContracts.get(clientId); if (!contract) return;
-    if (poc.current_spot !== undefined) { contract.currentSpot = Number(poc.current_spot) || contract.currentSpot; contract.historySpots.push(contract.currentSpot); if (contract.historySpots.length > 100) contract.historySpots.shift(); }
-    if (poc.entry_spot !== undefined) contract.entrySpot = Number(poc.entry_spot) || contract.entrySpot;
-    if (poc.payout !== undefined) contract.potentialPayout = Number(poc.payout) || contract.potentialPayout;
-    if (poc.profit !== undefined) contract.currentProfit = Number(poc.profit) || 0;
-    if (poc.exit_tick !== undefined) contract.exitSpot = Number(poc.exit_tick);
-    if (poc.exit_tick_time !== undefined) contract.expiryTime = Number(poc.exit_tick_time) * 1000;
-    const status = String(poc.status || '').toLowerCase(); const ended = Boolean(poc.is_sold || poc.is_expired || poc.is_settled || ['won', 'lost', 'sold'].includes(status));
-    if (ended) {
-      const profit = Number(poc.profit) || 0; contract.currentProfit = profit; contract.isWin = profit > 0; contract.status = status === 'sold' || poc.is_sold ? 'SOLD' : (profit > 0 ? 'WON' : 'LOST'); contract.remainingTicks = 0; if (poc.exit_tick !== undefined) contract.exitSpot = Number(poc.exit_tick); this.activeContracts.set(contract.id, contract); this.notifyContract(contract);
-      window.setTimeout(() => this.refreshBalance(), 250);
-    } else {
-      contract.status = 'OPEN'; if (poc.tick_count !== undefined && poc.tick_count !== null) contract.remainingTicks = Math.max(0, contract.durationTicks - Number(poc.tick_count));
-      this.notifyContract(contract);
+    const liveId = String(poc.contract_id || poc.id || '');
+    if (!liveId) return;
+    const clientId = this.liveToClientContract.get(liveId) || liveId;
+    const contract = this.activeContracts.get(clientId);
+    if (!contract) return;
+
+    if (poc.current_spot !== undefined) {
+      const currentSpot = Number(poc.current_spot);
+      if (Number.isFinite(currentSpot)) {
+        contract.currentSpot = currentSpot;
+        if (contract.historySpots[contract.historySpots.length - 1] !== currentSpot) contract.historySpots.push(currentSpot);
+        if (contract.historySpots.length > 100) contract.historySpots.shift();
+      }
     }
+    if (poc.entry_spot !== undefined) { const value = Number(poc.entry_spot); if (Number.isFinite(value)) contract.entrySpot = value; }
+    if (poc.payout !== undefined) { const value = Number(poc.payout); if (Number.isFinite(value)) contract.potentialPayout = value; }
+    if (poc.exit_tick !== undefined) { const value = Number(poc.exit_tick); if (Number.isFinite(value)) contract.exitSpot = value; }
+    if (poc.exit_tick_time !== undefined) { const value = Number(poc.exit_tick_time); if (Number.isFinite(value)) contract.expiryTime = value * 1000; }
+
+    const status = String(poc.status || '').toLowerCase();
+    const ended = Boolean(poc.is_sold || poc.is_expired || poc.is_settled || ['won', 'lost', 'sold'].includes(status));
+
+    if (ended) {
+      if (this.settledContracts.has(liveId)) return;
+      this.settledContracts.add(liveId);
+      this.clearSettlementPolling(liveId);
+
+      const profit = this.getContractProfit(poc, contract);
+      contract.currentProfit = Number.isFinite(profit) ? profit : 0;
+      contract.isWin = contract.currentProfit > 0;
+      contract.status = status === 'sold' || poc.is_sold ? 'SOLD' : (contract.currentProfit > 0 ? 'WON' : 'LOST');
+      contract.remainingTicks = 0;
+      if (poc.exit_tick !== undefined) { const value = Number(poc.exit_tick); if (Number.isFinite(value)) contract.exitSpot = value; }
+
+      this.activeContracts.set(clientId, contract);
+      this.notifyContract(contract);
+      this.refreshBalance();
+      window.setTimeout(() => this.refreshBalance(), 350);
+      return;
+    }
+
+    const reportedProfit = Number(poc.profit);
+    if (Number.isFinite(reportedProfit)) contract.currentProfit = reportedProfit;
+    contract.status = 'OPEN';
+    if (poc.tick_count !== undefined && poc.tick_count !== null) {
+      const tickCount = Number(poc.tick_count);
+      if (Number.isFinite(tickCount)) contract.remainingTicks = Math.max(0, contract.durationTicks - tickCount);
+    }
+    this.notifyContract(contract);
   }
 
-  public sellContractEarly(contractId: string): ActiveContract | null { const contract = this.activeContracts.get(contractId); if (!contract || contract.status !== 'OPEN' || !this.ws || this.ws.readyState !== WebSocket.OPEN) return null; this.ws.send(JSON.stringify({ sell: contractId, price: 0 })); return contract; }
+  public sellContractEarly(contractId: string): ActiveContract | null {
+    const contract = this.activeContracts.get(contractId);
+    if (!contract || contract.status !== 'OPEN' || !this.ws || this.ws.readyState !== WebSocket.OPEN) return null;
+    const liveId = (contract as ClientContract).liveContractId || this.liveToClientContract.get(contractId) || contractId;
+    this.ws.send(JSON.stringify({ sell: liveId, price: 0 }));
+    return contract;
+  }
 }
 
 export const derivWS = new DerivWebSocketService();
