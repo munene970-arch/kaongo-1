@@ -62,6 +62,15 @@ export interface ActiveContract {
   historySpots: number[];
 }
 
+export type DBotIndicatorTrigger =
+  | 'EMA_CROSS'
+  | 'RSI_OVERSOLD'
+  | 'SPIKE_DETECT'
+  | 'LAST_DIGIT_PATTERN'
+  | 'ACCU_SCALP'
+  | 'S_DIFFER_QUAD_PATTERN'
+  | 'ALTERNATING_DIGIT_DIFF';
+
 export interface DBotStrategy {
   id: string;
   name: string;
@@ -76,7 +85,7 @@ export interface DBotStrategy {
   stopLoss: number;
   maxLossStreak: number;
   rules: {
-    indicatorTrigger: 'EMA_CROSS' | 'RSI_OVERSOLD' | 'SPIKE_DETECT' | 'LAST_DIGIT_PATTERN' | 'ACCU_SCALP';
+    indicatorTrigger: DBotIndicatorTrigger;
     paramValue?: number;
   };
   isActive?: boolean;
@@ -116,21 +125,4 @@ export interface MarketSignal {
   entryPrice: number;
   description: string;
   recommendedTrade: string;
-}
-
-export interface ConnectionState {
-  isConnected: boolean;
-  mode: 'DEMO_SIMULATED' | 'DERIV_WEBSOCKET_LIVE';
-  appId: string;
-  accountType: 'DEMO' | 'REAL';
-  balanceUsd: number;
-  currency: string;
-  token?: string;
-  loginid?: string;
-  email?: string;
-  isAuthorized?: boolean;
-  authError?: string | null;
-  isConnecting?: boolean;
-  scopes?: string[];
-  activeEndpoint?: string;
 }
