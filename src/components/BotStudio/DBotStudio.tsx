@@ -225,127 +225,196 @@ export const DBotStudio: React.FC<DBotStudioProps> = ({
   };
 
   // Bot Automated Live Runner
-  useEffect(() => {
-    let interval: any = null;
+useEffect(() => {
+  if (!isRunning) return;
 
-    if (isRunning) {
-      let currentBotStake = initialStake;
-      let botProfitAccumulated = 0;
-      let currentBalance = balanceUsd;
+  let currentBotStake = initialStake;
+  let botProfitAccumulated = 0;
+  let predictionLocked = false;
+  let lockedPrediction: number | null = null;
 
-      setLogs((prev) => [`[${new Date().toLocaleTimeString()}] DBot Engine STARTED: ${activeBot.name}`, ...prev]);
+  const isXxyBot =
+    activeBot.id === 'bot_pattern_xxy_differ' ||
+    activeBot.name.toLowerCase().includes('xxy') ||
+    activeBot.rules?.indicatorTrigger === 'LAST_DIGIT_PATTERN';
 
-      interval = setInterval(() => {
-        // Generate new tick digit (0-9)
-        const nextDigit = Math.floor(Math.random() * 10);
-        const updatedDigits = [...digitsRef.current.slice(-9), nextDigit];
-        digitsRef.current = updatedDigits;
-        setRecentDigits(updatedDigits);
+  setLogs((prev) => [
+    `[${new Date().toLocaleTimeString()}] 🚀 DBot Engine STARTED: ${activeBot.name}`,
+    ...prev,
+  ]);
 
-        // Check if current bot is XXY Pattern Digit Differ Bot
-        const isXxyBot = activeBot.id === 'bot_pattern_xxy_differ' || activeBot.name.toLowerCase().includes('xxy') || activeBot.rules?.indicatorTrigger === 'LAST_DIGIT_PATTERN';
+  if (!isXxyBot) {
+    setLogs((prev) => [
+      `[${new Date().toLocaleTimeString()}] ⚠️ Live Bot Studio execution is currently enabled only for the XXY DIGITDIFF strategy.`,
+      ...prev,
+    ]);
 
-        if (isXxyBot && updatedDigits.length >= 3) {
-          const d1 = updatedDigits[updatedDigits.length - 3];
-          const d2 = updatedDigits[updatedDigits.length - 2];
-          const d3 = updatedDigits[updatedDigits.length - 1];
+    setIsRunning(false);
+    return;
+  }
 
-          // Entry Condition: Tick 1 = X, Tick 2 = X, Tick 3 = Y, where Y ≠ X
-          const isXxyPatternMatch = (d1 === d2) && (d3 !== d1);
+  const handleContract = (contract: any) => {
+    if (!predictionLocked) return;
 
-          if (isXxyPatternMatch) {
-            // 1. Arm bot with fresh XXY pattern (XXY Ready = TRUE)
-            const armedPrediction = d3;
-            setTargetPrediction(armedPrediction);
+    if (contract.status === 'WON' || contract.status === 'LOST' || contract.status === 'SOLD') {
+      const profit = Number(contract.currentProfit) || 0;
 
-            // 2. Execute DIGITDIFF contract (Target NOT Y) with XXY Ready = TRUE
-            // In Digit Differ, prediction = Y means betting that exit digit !== Y
-            const isWin = Math.random() < 0.91; // ~91% statistical probability for Digit Differ
-            let exitDigit: number;
-            if (isWin) {
-              const nonYDigits = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].filter((d) => d !== armedPrediction);
-              exitDigit = nonYDigits[Math.floor(Math.random() * nonYDigits.length)];
-            } else {
-              exitDigit = armedPrediction; // Loss occurs when exit digit matches unique Y digit
-            }
+      if (profit > 0) {
+        soundManager.playWinSound();
+        currentBotStake = initialStake;
+      } else {
+        soundManager.playLossSound();
+        currentBotStake = parseFloat(
+          (currentBotStake * martingaleFactor).toFixed(2)
+        );
+      }
 
-            if (isWin) {
-              soundManager.playWinSound();
-            } else {
-              soundManager.playLossSound();
-            }
+      botProfitAccumulated += profit;
 
-            const profitOrLoss = isWin
-              ? currentBotStake * 0.095
-              : -currentBotStake;
+      const resultText =
+        profit > 0
+          ? `WON +$${profit.toFixed(2)}`
+          : `LOST -$${Math.abs(profit).toFixed(2)}`;
 
-            botProfitAccumulated += profitOrLoss;
-            currentBalance += profitOrLoss;
-            onUpdateBalance(currentBalance);
+      setLogs((prev) => [
+        `[${new Date().toLocaleTimeString()}] ✅ XXY CONTRACT SETTLED → PREDICTION ${lockedPrediction} → ${resultText} → SCANNER UNLOCKED`,
+        ...prev.slice(0, 40),
+      ]);
 
-            const timeStr = new Date().toLocaleTimeString();
-            const logMsg = isWin
-              ? `[${timeStr}] 🎯 FRESH XXY DETECTED [${d1}, ${d2}, ${d3}] → ARMED (XXY Ready=TRUE) → PREDICTION = ${d3} → DIGITDIFF (TARGET NOT ${d3}) → EXIT DIGIT: ${exitDigit} (WON! Exit !== ${d3}) +$${profitOrLoss.toFixed(2)} | Balance: $${currentBalance.toFixed(2)} [RESET XXY Ready=FALSE]`
-              : `[${timeStr}] 🎯 FRESH XXY DETECTED [${d1}, ${d2}, ${d3}] → ARMED (XXY Ready=TRUE) → PREDICTION = ${d3} → DIGITDIFF (TARGET NOT ${d3}) → EXIT DIGIT: ${exitDigit} (LOST! Matched ${d3}) -$${Math.abs(profitOrLoss).toFixed(2)} | Next Stake: $${(currentBotStake * martingaleFactor).toFixed(2)} [RESET XXY Ready=FALSE]`;
+      predictionLocked = false;
+      lockedPrediction = null;
 
-            setLogs((logPrev) => [logMsg, ...logPrev.slice(0, 40)]);
+      if (botProfitAccumulated >= takeProfit) {
+        setLogs((prev) => [
+          `[${new Date().toLocaleTimeString()}] 🎯 TAKE PROFIT REACHED: +$${botProfitAccumulated.toFixed(2)}. BOT STOPPED.`,
+          ...prev,
+        ]);
+        setIsRunning(false);
+      }
 
-            if (isWin) {
-              currentBotStake = initialStake;
-            } else {
-              currentBotStake = parseFloat((currentBotStake * martingaleFactor).toFixed(2));
-            }
-          } else {
-            // Pattern did not match (e.g. 4,4,4 or 5,6,5 or 8,7,7) -> XXY Ready = FALSE -> Skip trade
-            const timeStr = new Date().toLocaleTimeString();
-            const logMsg = `[${timeStr}] ⏳ Ticks [${d1}, ${d2}, ${d3}] → XXY Ready = FALSE. Waiting for fresh [X, X, Y] pattern. Skipped.`;
-            setLogs((logPrev) => [logMsg, ...logPrev.slice(0, 40)]);
-          }
-        } else {
-          // General bot trade execution step
-          const isWin = activeBot.category === 'DIGITS' ? Math.random() < 0.91 : Math.random() < 0.52;
-          if (isWin) {
-            soundManager.playWinSound();
-          } else {
-            soundManager.playLossSound();
-          }
+      if (botProfitAccumulated <= -stopLoss) {
+        setLogs((prev) => [
+          `[${new Date().toLocaleTimeString()}] 🛑 STOP LOSS REACHED: -$${Math.abs(botProfitAccumulated).toFixed(2)}. BOT STOPPED.`,
+          ...prev,
+        ]);
+        setIsRunning(false);
+      }
+    }
+  };
 
-          const profitOrLoss = isWin
-            ? currentBotStake * (activeBot.category === 'DIGITS' ? 0.095 : 0.95)
-            : -currentBotStake;
+  const handleTick = (tick: any) => {
+    if (!tick || predictionLocked) return;
 
-          botProfitAccumulated += profitOrLoss;
-          currentBalance += profitOrLoss;
-          onUpdateBalance(currentBalance);
+    const quote = Number(tick.quote);
+    if (!Number.isFinite(quote)) return;
 
-          const logMsg = isWin
-            ? `[${new Date().toLocaleTimeString()}] WIN +$${profitOrLoss.toFixed(2)} | Balance: $${currentBalance.toFixed(2)}`
-            : `[${new Date().toLocaleTimeString()}] LOSS -$${Math.abs(profitOrLoss).toFixed(2)} | Next Stake: $${(currentBotStake * martingaleFactor).toFixed(2)}`;
+    /*
+     * IMPORTANT:
+     * This is a CONTINUOUS tick stream.
+     *
+     * Every new real Deriv tick adds exactly one digit.
+     * We never generate our own digits.
+     * We never reset the stream after a failed pattern.
+     *
+     * Example:
+     * 5,2,2,7
+     *
+     * windows checked:
+     * 5,2,2
+     * 2,2,7  <-- trade
+     */
+    const digit = Number(
+      quote.toFixed(2).slice(-1)
+    );
 
-          setLogs((logPrev) => [logMsg, ...logPrev.slice(0, 40)]);
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
 
-          if (isWin) {
-            currentBotStake = initialStake;
-          } else {
-            currentBotStake = parseFloat((currentBotStake * martingaleFactor).toFixed(2));
-          }
-        }
+    const nextDigits = [
+      ...digitsRef.current.slice(-19),
+      digit,
+    ];
 
-        // Check Take Profit / Stop Loss
-        if (botProfitAccumulated >= takeProfit) {
-          setLogs((logPrev) => [`[${new Date().toLocaleTimeString()}] TAKE PROFIT TARGET REACHED (+$${botProfitAccumulated.toFixed(2)}). Bot STOPPED automatically.`, ...logPrev]);
-          setIsRunning(false);
-        } else if (botProfitAccumulated <= -stopLoss) {
-          setLogs((logPrev) => [`[${new Date().toLocaleTimeString()}] STOP LOSS LIMIT REACHED (-$${Math.abs(botProfitAccumulated).toFixed(2)}). Bot STOPPED automatically.`, ...logPrev]);
-          setIsRunning(false);
-        }
-      }, 1800);
+    digitsRef.current = nextDigits;
+    setRecentDigits(nextDigits);
+
+    if (nextDigits.length < 3) return;
+
+    const d1 = nextDigits[nextDigits.length - 3];
+    const d2 = nextDigits[nextDigits.length - 2];
+    const d3 = nextDigits[nextDigits.length - 1];
+
+    /*
+     * XXY:
+     *
+     * X == X
+     * Y != X
+     *
+     * Example:
+     * 2,2,7 -> prediction 7
+     */
+    if (d1 !== d2 || d3 === d1) {
+      setLogs((prev) => [
+        `[${new Date().toLocaleTimeString()}] ⏳ Continuous ticks [${d1}, ${d2}, ${d3}] → no XXY trade.`,
+        ...prev.slice(0, 40),
+      ]);
+      return;
     }
 
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isRunning, activeBot, initialStake, martingaleFactor, takeProfit, stopLoss]);
+    /*
+     * LOCK THE UNIQUE Y DIGIT BEFORE BUYING.
+     * This prevents another incoming tick from changing
+     * the prediction while the contract is being opened.
+     */
+    lockedPrediction = d3;
+    predictionLocked = true;
+
+    setTargetPrediction(d3);
+
+    setLogs((prev) => [
+      `[${new Date().toLocaleTimeString()}] 🎯 XXY DETECTED [${d1}, ${d2}, ${d3}] → X=${d1}, X=${d2}, Y=${d3} → PREDICTION LOCKED = ${d3}`,
+      ...prev.slice(0, 40),
+    ]);
+
+    const contract = derivWS.purchaseContract({
+      symbol: botSymbol,
+      contractType: 'DIGITDIFF',
+      stake: currentBotStake,
+      durationTicks: 1,
+      targetDigit: d3,
+      symbolName:
+        markets.find((m) => m.symbol === botSymbol)?.name ||
+        botSymbol,
+    });
+
+    if (!contract) {
+      predictionLocked = false;
+      lockedPrediction = null;
+      return;
+    }
+
+    setLogs((prev) => [
+      `[${new Date().toLocaleTimeString()}] 🟢 REAL DERIV TRADE SENT → DIGITDIFF ${d3} → STAKE $${currentBotStake.toFixed(2)} → 1 TICK`,
+      ...prev.slice(0, 40),
+    ]);
+  };
+
+  derivWS.subscribeTicks(botSymbol, handleTick);
+  derivWS.subscribeContracts(handleContract);
+
+  return () => {
+    derivWS.unsubscribeTicks(botSymbol, handleTick);
+    derivWS.unsubscribeContracts(handleContract);
+  };
+}, [
+  isRunning,
+  activeBot,
+  botSymbol,
+  initialStake,
+  martingaleFactor,
+  takeProfit,
+  stopLoss,
+  markets,
+]);
 
   // Ask AI to generate Bot strategy
   const handleGenerateAiBot = async () => {
