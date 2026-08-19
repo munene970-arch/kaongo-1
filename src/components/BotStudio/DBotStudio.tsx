@@ -12,7 +12,7 @@ const CATALOG: DBotStrategy[] = [...INITIAL_PRESET_BOTS, ...ADDITIONAL_BOT_STRAT
 export const DBotStudio: React.FC<DBotStudioProps> = ({ markets, balanceUsd, onUpdateBalance, activeBotOverride }) => {
   const [strategies,setStrategies]=useState(CATALOG), [selectedBotId,setSelectedBotId]=useState(CATALOG[0]?.id||''), [isRunning,setIsRunning]=useState(false), [logs,setLogs]=useState<string[]>([]), [recentDigits,setRecentDigits]=useState<number[]>([]), [latestQuote,setLatestQuote]=useState(0), [sessionProfit,setSessionProfit]=useState(0), [currentStake,setCurrentStake]=useState(10), [patternStatus,setPatternStatus]=useState('IDLE');
   const [botName,setBotName]=useState(''), [botSymbol,setBotSymbol]=useState<MarketSymbol>('R_100'), [contractType,setContractType]=useState('DIGITDIFF'), [initialStake,setInitialStake]=useState(10), [martingaleFactor,setMartingaleFactor]=useState(11.5), [takeProfit,setTakeProfit]=useState(50), [stopLoss,setStopLoss]=useState(100), [durationTicks,setDurationTicks]=useState(1), [targetPrediction,setTargetPrediction]=useState(2);
-  const digitsRef=useRef<number[]>([]), runningRef=useRef(false), inTradeRef=useRef(false), activeContractRef=useRef<string|null>(null), stakeRef=useRef(10), profitRef=useRef(0), targetRef=useRef(2), lastTradeRef=useRef(0);
+  const digitsRef=useRef<number[]>([]), runningRef=useRef(false), inTradeRef=useRef(false), activeContractRef=useRef<string|null>(null), stakeRef=useRef(10), profitRef=useRef(0), targetRef=useRef(2), lastTradeRef=useRef(0), lastProcessedTickRef=useRef<string|null>(null);
   const activeBot=useMemo(()=>strategies.find(b=>b.id===selectedBotId)||strategies[0],[strategies,selectedBotId]);
   const isSDiffer=activeBot?.id==='bot_sdiffer_quad_pattern'||activeBot?.rules.indicatorTrigger==='S_DIFFER_QUAD_PATTERN';
   const isXxy=activeBot?.id==='bot_pattern_xxy_differ'||activeBot?.rules.indicatorTrigger==='LAST_DIGIT_PATTERN'||activeBot?.name.toLowerCase().includes('xxy');
@@ -21,18 +21,36 @@ export const DBotStudio: React.FC<DBotStudioProps> = ({ markets, balanceUsd, onU
 
   useEffect(()=>{ if(!activeBot)return; setBotName(activeBot.name);setBotSymbol(activeBot.symbol);setContractType(activeBot.contractType);setInitialStake(activeBot.initialStake);setCurrentStake(activeBot.initialStake);setMartingaleFactor(activeBot.martingaleFactor);setTakeProfit(activeBot.takeProfit);setStopLoss(activeBot.stopLoss);setDurationTicks(activeBot.durationTicks||1);setTargetPrediction(activeBot.rules.paramValue??2);targetRef.current=activeBot.rules.paramValue??2;stakeRef.current=activeBot.initialStake; },[activeBot]);
   useEffect(()=>{ if(!activeBotOverride)return; setStrategies(p=>p.some(b=>b.id===activeBotOverride.id)?p:[activeBotOverride,...p]);setSelectedBotId(activeBotOverride.id);setIsRunning(false);log(`Strategy "${activeBotOverride.name}" loaded into Bot Studio.`); },[activeBotOverride]);
-  useEffect(()=>{ const h=(t:any)=>{const q=Number(t.quote);if(!Number.isFinite(q))return;const d=extractDerivLastDigit(q);setLatestQuote(q);const n=[...digitsRef.current.slice(-19),d];digitsRef.current=n;setRecentDigits(n);};derivWS.subscribeTicks(botSymbol,h);return()=>derivWS.unsubscribeTicks(botSymbol,h);},[botSymbol]);
+
+  // Single tick collector: keep one authoritative sliding window and de-duplicate
+  // ticks by Deriv tick id/epoch so the strategy evaluator never appends a tick twice.
+  useEffect(()=>{
+    digitsRef.current=[]; setRecentDigits([]); lastProcessedTickRef.current=null;
+    const h=(t:any)=>{
+      const q=Number(t.quote); if(!Number.isFinite(q))return;
+      const tickKey=t.id!=null?String(t.id):t.epoch!=null?String(t.epoch):`${t.symbol||botSymbol}:${q}`;
+      if(tickKey&&tickKey===lastProcessedTickRef.current)return;
+      lastProcessedTickRef.current=tickKey;
+      const d=extractDerivLastDigit(q); setLatestQuote(q);
+      const n=[...digitsRef.current.slice(-19),d]; digitsRef.current=n; setRecentDigits(n);
+    };
+    derivWS.subscribeTicks(botSymbol,h); return()=>derivWS.unsubscribeTicks(botSymbol,h);
+  },[botSymbol]);
 
   const buy=(target:number,reason:string)=>{if(inTradeRef.current)return;const now=Date.now();if(isAlternating&&now-lastTradeRef.current<5000){setPatternStatus('SCANNING');return;}targetRef.current=target;setTargetPrediction(target);lastTradeRef.current=now;inTradeRef.current=true;setPatternStatus('SETTLING');const symbolName=markets.find(m=>m.symbol===botSymbol)?.displayName||botSymbol;const c=derivWS.purchaseContract({symbol:botSymbol,contractType:'DIGITDIFF',stake:stakeRef.current,durationTicks:1,targetDigit:target,barrier:target,symbolName});activeContractRef.current=c.id;log(`🎯 ${reason} → DIGITDIFF ${target} | $${stakeRef.current.toFixed(2)} | 1 tick`);};
 
-  useEffect(()=>{if(!isRunning)return;runningRef.current=true;const h=(t:any)=>{if(!runningRef.current||inTradeRef.current)return;const q=Number(t.quote);if(!Number.isFinite(q))return;const d=extractDerivLastDigit(q),n=[...digitsRef.current.slice(-19),d];digitsRef.current=n;setRecentDigits(n);
+  useEffect(()=>{if(!isRunning)return;runningRef.current=true;const h=(t:any)=>{if(!runningRef.current||inTradeRef.current)return;const tickKey=t.id!=null?String(t.id):t.epoch!=null?String(t.epoch):'';if(tickKey&&tickKey===lastProcessedTickRef.current)return;const n=digitsRef.current;if(!n.length)return;
     if(isSDiffer&&n.length>=4){const[d1,d2,d3,d4]=n.slice(-4),xyxx=d1===d3&&d3===d4&&d2!==d1,xxyx=d1===d2&&d2===d4&&d3!==d1;if(xyxx||xxyx)buy(d4,`S-DIFFER ${xyxx?'XYXX':'XXYX'} [${d1},${d2},${d3},${d4}] (X=${d4}, Y=${xyxx?d2:d3})`);else setPatternStatus('SCANNING');return;}
     if(isXxy&&n.length>=3){const[d1,d2,d3]=n.slice(-3);if(d1===d2&&d3!==d1)buy(d3,`XXY [${d1},${d2},${d3}]`);else setPatternStatus('SCANNING');return;}
     if(isAlternating&&n.length>=2){const[d1,d2]=n.slice(-2);if(d1!==d2)buy(targetRef.current||5,`ALTERNATING [${d1}→${d2}]`);else setPatternStatus('SCANNING');return;}
     if(n.length>=1)buy(targetRef.current,`GENERAL ${botSymbol} signal`);
   };derivWS.subscribeTicks(botSymbol,h);return()=>{runningRef.current=false;derivWS.unsubscribeTicks(botSymbol,h);};},[isRunning,botSymbol,isSDiffer,isXxy,isAlternating]);
 
-  useEffect(()=>{const h=(c:any)=>{if(!activeContractRef.current||c.id!==activeContractRef.current||!['WON','LOST','SOLD'].includes(c.status))return;const p=Number(c.currentProfit)||0;profitRef.current+=p;setSessionProfit(profitRef.current);onUpdateBalance(balanceUsd+p);if(p>0){stakeRef.current=initialStake;setCurrentStake(initialStake);log(`🏆 SETTLED WON +$${p.toFixed(2)} → stake reset $${initialStake.toFixed(2)}`);}else{const ns=Number((stakeRef.current*martingaleFactor).toFixed(2));stakeRef.current=ns;setCurrentStake(ns);log(`❌ SETTLED LOST -$${Math.abs(p).toFixed(2)} → next stake $${ns.toFixed(2)}`);}inTradeRef.current=false;activeContractRef.current=null;setPatternStatus('SCANNING');if(profitRef.current>=takeProfit){log(`🎯 TAKE PROFIT +$${profitRef.current.toFixed(2)} → STOPPED`);setIsRunning(false);runningRef.current=false;}if(profitRef.current<=-stopLoss){log(`🛑 STOP LOSS -$${Math.abs(profitRef.current).toFixed(2)} → STOPPED`);setIsRunning(false);runningRef.current=false;}};derivWS.subscribeContracts(h);return()=>derivWS.unsubscribeContracts(h);},[balanceUsd,initialStake,martingaleFactor,takeProfit,stopLoss,onUpdateBalance]);
+  useEffect(()=>{const h=(c:any)=>{if(!activeContractRef.current||c.id!==activeContractRef.current||!['WON','LOST','SOLD'].includes(c.status))return;const p=Number(c.currentProfit)||0;profitRef.current+=p;setSessionProfit(profitRef.current);
+    // Live authenticated accounts receive the authoritative balance from the WebSocket
+    // balance subscription/refresh. Do not optimistically add P/L and double-count it.
+    if(!derivWS.getIsLiveWs())onUpdateBalance(balanceUsd+p);
+    if(p>0){stakeRef.current=initialStake;setCurrentStake(initialStake);log(`🏆 SETTLED WON +$${p.toFixed(2)} → stake reset $${initialStake.toFixed(2)} | Deriv balance refresh requested`);}else{const ns=Number((stakeRef.current*martingaleFactor).toFixed(2));stakeRef.current=ns;setCurrentStake(ns);log(`❌ SETTLED LOST -$${Math.abs(p).toFixed(2)} → next stake $${ns.toFixed(2)} | Deriv balance refresh requested`);}inTradeRef.current=false;activeContractRef.current=null;setPatternStatus('SCANNING');if(profitRef.current>=takeProfit){log(`🎯 TAKE PROFIT +$${profitRef.current.toFixed(2)} → STOPPED`);setIsRunning(false);runningRef.current=false;}if(profitRef.current<=-stopLoss){log(`🛑 STOP LOSS -$${Math.abs(profitRef.current).toFixed(2)} → STOPPED`);setIsRunning(false);runningRef.current=false;}};derivWS.subscribeContracts(h);return()=>derivWS.unsubscribeContracts(h);},[balanceUsd,initialStake,martingaleFactor,takeProfit,stopLoss,onUpdateBalance]);
 
   const toggle=()=>{if(isRunning){runningRef.current=false;inTradeRef.current=false;setIsRunning(false);setPatternStatus('IDLE');log(`🛑 STOPPED by user | Session P/L $${profitRef.current.toFixed(2)}`);return;}profitRef.current=0;setSessionProfit(0);stakeRef.current=initialStake;setCurrentStake(initialStake);inTradeRef.current=false;setIsRunning(true);runningRef.current=true;setPatternStatus('SCANNING');log(`🟢 STARTED ${activeBot.name} on ${botSymbol} using continuous real Deriv ticks`);};
   const save=()=>{setStrategies(p=>p.map(b=>b.id===activeBot.id?{...b,name:botName,symbol:botSymbol,contractType,initialStake,martingaleFactor,takeProfit,stopLoss,durationTicks,rules:{...b.rules,paramValue:targetPrediction}}:b));log(`✅ Saved "${botName}".`);};
