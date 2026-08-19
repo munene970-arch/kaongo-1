@@ -56,7 +56,7 @@ export interface ActiveContract {
   expiryTime: number;
   durationTicks: number;
   remainingTicks: number;
-  status: 'OPEN' | 'WON' | 'LOST' | 'SOLD';
+  status: 'OPEN' | 'WON' | 'LOST' | 'SOLD' | 'CANCELLED';
   isWin?: boolean;
   exitSpot?: number;
   historySpots: number[];
